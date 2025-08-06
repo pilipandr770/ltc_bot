@@ -3,7 +3,9 @@ services:
     name: ltc-trading-bot
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: |
+      pip install --upgrade pip
+      pip install --only-binary=all -r requirements.txt
     startCommand: python app/bot.py
     envVars:
       - key: BINANCE_API_KEY
@@ -11,7 +13,11 @@ services:
       - key: BINANCE_API_SECRET
         sync: false
       - key: PYTHON_VERSION
-        value: "3.11"
+        value: "3.11.10"
       - key: TEST_MODE
         value: "false"
+      - key: PIP_PREFER_BINARY
+        value: "1"
+      - key: PIP_ONLY_BINARY
+        value: ":all:"
     autoDeploy: false  # Ручной деплой для безопасности

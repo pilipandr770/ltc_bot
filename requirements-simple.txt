@@ -1,0 +1,14 @@
+# Simplified requirements without pandas compilation issues
+python-binance==1.0.19
+python-dotenv==1.0.0
+requests==2.31.0
+flask==2.3.3
+gunicorn==21.2.0
+
+# Use alternative for calculations instead of pandas
+python-binance==1.0.19
+python-dotenv==1.0.1
+numpy==1.24.4
+requests==2.31.0
+flask==3.0.3
+gunicorn==23.0.0

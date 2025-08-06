@@ -1,0 +1,34 @@
+services:
+  # Trading Bot Worker
+  - type: worker
+    name: ltc-trading-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app/bot.py
+    envVars:
+      - key: BINANCE_API_KEY
+        sync: false
+      - key: BINANCE_API_SECRET
+        sync: false
+      - key: TEST_MODE
+        value: "false"
+      - key: TRADE_PERCENTAGE
+        value: "0.95"
+      - key: CHECK_INTERVAL
+        value: "20"
+    autoDeploy: false
+
+  # Web Monitor (Optional)
+  - type: web
+    name: ltc-bot-monitor
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app.web_monitor:app --bind 0.0.0.0:$PORT
+    envVars:
+      - key: PORT
+        value: "10000"
+      - key: FLASK_ENV
+        value: "production"
+    autoDeploy: false

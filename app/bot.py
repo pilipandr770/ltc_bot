@@ -85,6 +85,9 @@ def get_symbol_info(symbol):
 
 QUANTITY_PRECISION, MIN_QUANTITY = get_symbol_info(SYMBOL)
 
+# Минимальная стоимость сделки для Binance (обычно 10 USDT)
+MIN_NOTIONAL = 10.0
+
 # Получение балансов с обработкой ошибок времени
 def get_balances():
     max_retries = 3
@@ -139,11 +142,14 @@ def buy(price):
     for attempt in range(max_retries):
         try:
             usdt_bal = float(client.get_asset_balance('USDT')['free'])
-            qty = round(usdt_bal * TRADE_PERCENTAGE / price, QUANTITY_PRECISION)
+            qty = round((usdt_bal * TRADE_PERCENTAGE) / price, QUANTITY_PRECISION)
             
-            log_message(f"Спроба покупки: USDT баланс={usdt_bal:.4f}, ціна={price:.4f}, кількість={qty:.6f}", "INFO")
+            # Проверяем минимальную стоимость сделки (NOTIONAL)
+            notional_value = usdt_bal * TRADE_PERCENTAGE
             
-            if qty >= MIN_QUANTITY:
+            log_message(f"Спроба покупки: USDT баланс={usdt_bal:.4f}, ціна={price:.4f}, кількість={qty:.6f}, сума={notional_value:.2f} USDT", "INFO")
+            
+            if qty >= MIN_QUANTITY and notional_value >= MIN_NOTIONAL:
                 order = client.create_order(symbol=SYMBOL, side=SIDE_BUY, type=ORDER_TYPE_MARKET, quantity=qty)
                 
                 # Детальна інформація про сделку
@@ -163,8 +169,11 @@ def buy(price):
                 # Оновлений баланс
                 log_balance()
                 return
+            elif qty < MIN_QUANTITY:
+                log_message(f"❌ Занадто мала кількість для покупки: {qty:.6f} < {MIN_QUANTITY}", "WARNING")
+                return
             else:
-                log_message("❌ Мало коштів для покупки", "WARNING")
+                log_message(f"❌ Занадто мала сума для покупки: {notional_value:.2f} USDT < {MIN_NOTIONAL} USDT", "WARNING")
                 return
                 
         except Exception as e:
@@ -187,9 +196,12 @@ def sell(price):
             ltc_bal = float(client.get_asset_balance('LTC')['free'])
             qty = round(ltc_bal, QUANTITY_PRECISION)
             
-            log_message(f"Спроба продажу: LTC баланс={ltc_bal:.6f}, ціна={price:.4f}, кількість={qty:.6f}", "INFO")
+            # Проверяем минимальную стоимость сделки (NOTIONAL)
+            notional_value = qty * price
             
-            if qty >= MIN_QUANTITY:
+            log_message(f"Спроба продажу: LTC баланс={ltc_bal:.6f}, ціна={price:.4f}, кількість={qty:.6f}, сума={notional_value:.2f} USDT", "INFO")
+            
+            if qty >= MIN_QUANTITY and notional_value >= MIN_NOTIONAL:
                 order = client.create_order(symbol=SYMBOL, side=SIDE_SELL, type=ORDER_TYPE_MARKET, quantity=qty)
                 
                 # Детальна інформація про сделку
@@ -209,8 +221,11 @@ def sell(price):
                 # Оновлений баланс
                 log_balance()
                 return
+            elif qty < MIN_QUANTITY:
+                log_message(f"❌ Занадто мала кількість для продажу: {qty:.6f} < {MIN_QUANTITY}", "WARNING")
+                return
             else:
-                log_message("❌ Мало активу для продажу", "WARNING")
+                log_message(f"❌ Занадто мала сума для продажу: {notional_value:.2f} USDT < {MIN_NOTIONAL} USDT", "WARNING")
                 return
                 
         except Exception as e:

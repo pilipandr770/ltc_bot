@@ -16,8 +16,8 @@
 
 1. **Клонирование репозитория:**
 ```bash
-git clone https://github.com/yourusername/bot_binance_ltc_usdt.git
-cd bot_binance_ltc_usdt
+git clone https://github.com/pilipandr770/ltc_bot.git
+cd ltc_bot
 ```
 
 2. **Установка зависимостей:**
@@ -122,8 +122,8 @@ MIT License
 
 ```bash
 # Клонирование
-git clone https://github.com/yourusername/bot_binance_ltc_usdt.git
-cd bot_binance_ltc_usdt
+git clone https://github.com/pilipandr770/ltc_bot.git
+cd ltc_bot
 
 # Установка
 pip install -r requirements.txt

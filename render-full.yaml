@@ -13,10 +13,8 @@ services:
         sync: false
       - key: TEST_MODE
         value: "false"
-      - key: TRADE_PERCENTAGE
-        value: "0.95"
-      - key: CHECK_INTERVAL
-        value: "20"
+      - key: PYTHON_VERSION
+        value: "3.11"
     autoDeploy: false
 
   # Web Monitor (Optional)
@@ -25,10 +23,8 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app.web_monitor:app --bind 0.0.0.0:$PORT
+    startCommand: gunicorn --bind 0.0.0.0:$PORT app.web_monitor:app
     envVars:
-      - key: PORT
-        value: "10000"
-      - key: FLASK_ENV
-        value: "production"
+      - key: PYTHON_VERSION
+        value: "3.11"
     autoDeploy: false

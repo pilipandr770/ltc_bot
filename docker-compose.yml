@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  ltc-bot:
+    build: .
+    container_name: ltc-trading-bot
+    restart: unless-stopped
+    environment:
+      - BINANCE_API_KEY=${BINANCE_API_KEY}
+      - BINANCE_API_SECRET=${BINANCE_API_SECRET}
+      - TEST_MODE=false
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - bot-network
+
+  # Опциональный веб-мониторинг
+  web-monitor:
+    build: .
+    container_name: ltc-web-monitor
+    restart: unless-stopped
+    command: ["python", "app/web_bot.py"]
+    environment:
+      - BINANCE_API_KEY=${BINANCE_API_KEY}
+      - BINANCE_API_SECRET=${BINANCE_API_SECRET}
+      - TEST_MODE=false
+      - PORT=5000
+    ports:
+      - "5000:5000"
+    networks:
+      - bot-network
+
+networks:
+  bot-network:
+    driver: bridge

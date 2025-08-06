@@ -1,25 +1,29 @@
-FROM python:3.11.9-slim
+FROM python:3.11-slim
 
-# Установка системных зависимостей
-RUN apt-get update && apt-get install -y \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
-
-# Установка рабочей директории
+# Устанавливаем рабочую директорию
 WORKDIR /app
 
-# Копирование файлов требований
-COPY requirements.txt .
+# Копируем файлы зависимостей
+COPY requirements-minimal.txt .
 
-# Установка зависимостей
-RUN pip install --no-cache-dir -r requirements.txt
+# Устанавливаем зависимости
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements-minimal.txt
 
-# Копирование кода приложения
-COPY . .
+# Копируем исходный код
+COPY app/ ./app/
+
+# Создаем пользователя для безопасности
+RUN adduser --disabled-password --gecos '' botuser && \
+    chown -R botuser:botuser /app
+USER botuser
 
 # Переменные окружения
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 
+# Открываем порт для health check
+EXPOSE 5000
+
 # Команда запуска
-CMD ["python", "app/bot.py"]
+CMD ["python", "app/bot_docker.py"]

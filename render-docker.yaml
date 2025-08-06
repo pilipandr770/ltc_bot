@@ -1,0 +1,13 @@
+services:
+  - type: worker
+    name: ltc-trading-bot-docker
+    env: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: BINANCE_API_KEY
+        sync: false
+      - key: BINANCE_API_SECRET
+        sync: false
+      - key: TEST_MODE
+        value: "false"

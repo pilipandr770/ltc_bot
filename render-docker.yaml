@@ -1,5 +1,5 @@
 services:
-  - type: worker
+  - type: web
     name: ltc-trading-bot-docker
     env: docker
     plan: free
@@ -11,3 +11,7 @@ services:
         sync: false
       - key: TEST_MODE
         value: "false"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+    healthCheckPath: "/health"
+    autoDeploy: false

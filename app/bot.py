@@ -1,7 +1,9 @@
 # trading_bot/ltc_bot.py
 import os
 import time
-import pandas as pd
+# import pandas as pd  # Удалили pandas для совместимости с Render
+import signal
+import sys
 from datetime import datetime
 from binance.client import Client
 from binance.enums import *
@@ -25,10 +27,23 @@ CHECK_INTERVAL = 20  # Перевіряти MA кожні 20 секунд (що�
 TRADE_PERCENTAGE = 0.95  # Використовувати 95% балансу (залишаємо 5% на комісії)
 TEST_MODE = False  # Увімкнути для тестування без реальних сделок
 
+# Глобальная переменная для graceful shutdown
+running = True
+
+def signal_handler(signum, frame):
+    global running
+    log_message("Получен сигнал завершения, останавливаем бота...", "SHUTDOWN")
+    running = False
+
+# Регистрируем обработчики сигналов
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
+
 # Логування з часовими мітками
 def log_message(msg, level="INFO"):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts}] [{level}] {msg}")
+    sys.stdout.flush()  # Принудительная очистка буфера для Render
 
 # Підключення до Binance з автокорекцією часу
 try:
@@ -92,7 +107,7 @@ def log_balance():
     usdt_bal, ltc_bal = get_balances()
     log_message(f"Баланс: {usdt_bal:.4f} USDT | {ltc_bal:.6f} LTC", "BALANCE")
 
-# Отримання свічок (Binance API або fallback на публічний REST)
+# Отримання свічок без pandas
 def get_klines(symbol, interval, limit=MA_LONG+5):
     try:
         klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
@@ -100,12 +115,19 @@ def get_klines(symbol, interval, limit=MA_LONG+5):
         url = 'https://api.binance.com/api/v3/klines'
         params = {'symbol': symbol, 'interval': interval, 'limit': limit}
         klines = requests.get(url, params=params).json()
-    df = pd.DataFrame(klines, columns=[
-        'open_time','open','high','low','close','volume',
-        'close_time','qav','num_trades','tbb','tbq','ignore'
-    ])
-    df['close'] = df['close'].astype(float)
-    return df
+    
+    # Извлекаем только цены закрытия
+    closes = [float(kline[4]) for kline in klines]
+    return closes
+
+def calculate_ma_simple(prices, period):
+    """Расчет скользящей средней без pandas"""
+    if len(prices) < period:
+        return None
+    
+    # Берем последние period цен и считаем среднее
+    recent_prices = prices[-period:]
+    return sum(recent_prices) / len(recent_prices)
 
 # Функції купівлі та продажу з retry логікою
 def buy(price):
@@ -215,16 +237,16 @@ def run_bot():
     prev_ma7 = prev_ma25 = None
     iteration_count = 0
 
-    while True:
+    while running:
         try:
-            df = get_klines(SYMBOL, INTERVAL)
-            df['MA7'] = df['close'].rolling(MA_SHORT).mean()
-            df['MA25'] = df['close'].rolling(MA_LONG).mean()
-            curr_ma7 = df['MA7'].iloc[-1]
-            curr_ma25 = df['MA25'].iloc[-1]
-            current_price = df['close'].iloc[-1]
+            prices = get_klines(SYMBOL, INTERVAL)
+            current_price = prices[-1]
+            
+            # Расчет скользящих средних без pandas
+            curr_ma7 = calculate_ma_simple(prices, MA_SHORT)
+            curr_ma25 = calculate_ma_simple(prices, MA_LONG)
 
-            if pd.notna(curr_ma7) and pd.notna(curr_ma25):
+            if curr_ma7 is not None and curr_ma25 is not None:
                 # Показываем баланс каждые 10 итераций (каждые ~3.5 минуты)
                 if iteration_count % 10 == 0:
                     log_balance()
@@ -300,11 +322,19 @@ def run_bot():
                 prev_ma7, prev_ma25 = curr_ma7, curr_ma25
                 iteration_count += 1
 
-            time.sleep(CHECK_INTERVAL)
+            # Проверяем running перед сном
+            if running:
+                time.sleep(CHECK_INTERVAL)
 
+        except KeyboardInterrupt:
+            log_message("Получен сигнал прерывания", "SHUTDOWN")
+            running = False
         except Exception as e:
             log_message(f"Критична помилка: {e}", "ERROR")
-            time.sleep(CHECK_INTERVAL)
+            if running:
+                time.sleep(CHECK_INTERVAL)
+    
+    log_message("Бот остановлен", "SHUTDOWN")
 
 if __name__ == '__main__':
     run_bot()

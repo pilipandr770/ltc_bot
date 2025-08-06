@@ -224,6 +224,7 @@ def sell(price):
 
 # Головна функція бота
 def run_bot():
+    global running
     log_message(f"Старт бота для {SYMBOL} (TEST_MODE: {TEST_MODE})", "STARTUP")
     log_balance()  # Показати початковий баланс
     

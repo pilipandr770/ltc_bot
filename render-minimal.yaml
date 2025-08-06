@@ -1,22 +1,14 @@
 services:
-  - type: background-worker
+  - type: worker
     name: ltc-trading-bot-minimal
-    runtime: python
+    env: python
     plan: free
-    buildCommand: |
-      python -m pip install --upgrade pip
-      pip install --no-cache-dir -r requirements-minimal.txt
+    buildCommand: pip install --no-cache-dir -r requirements-minimal.txt
     startCommand: python app/bot_minimal.py
     envVars:
       - key: BINANCE_API_KEY
         sync: false
       - key: BINANCE_API_SECRET
         sync: false
-      - key: PYTHON_VERSION
-        value: "3.11.9"
       - key: TEST_MODE
         value: "false"
-      - key: TELEGRAM_TOKEN
-        sync: false
-      - key: TELEGRAM_CHAT_ID
-        sync: false

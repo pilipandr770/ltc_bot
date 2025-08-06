@@ -1,10 +1,10 @@
 services:
-  - type: worker
-    name: ltc-trading-bot
+  - type: web
+    name: ltc-trading-bot-web
     env: python
     plan: free
     buildCommand: pip install --no-cache-dir -r requirements-minimal.txt
-    startCommand: python app/bot_minimal.py
+    startCommand: python app/web_bot.py
     envVars:
       - key: BINANCE_API_KEY
         sync: false

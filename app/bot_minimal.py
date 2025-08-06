@@ -1,6 +1,8 @@
 # trading_bot/ltc_bot_minimal.py
 import os
 import time
+import signal
+import sys
 from datetime import datetime
 from binance.client import Client
 from binance.enums import *
@@ -24,9 +26,22 @@ CHECK_INTERVAL = 20
 TRADE_PERCENTAGE = 0.95
 TEST_MODE = False
 
+# Глобальная переменная для graceful shutdown
+running = True
+
+def signal_handler(signum, frame):
+    global running
+    log_message("Получен сигнал завершения, останавливаем бота...", "SHUTDOWN")
+    running = False
+
+# Регистрируем обработчики сигналов
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
+
 def log_message(msg, level="INFO"):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts}] [{level}] {msg}")
+    sys.stdout.flush()  # Принудительная очистка буфера для Render
 
 # Підключення до Binance з автокорекцією часу
 try:
@@ -139,6 +154,7 @@ def place_sell_order(symbol, ltc_amount):
     return None
 
 def run_bot():
+    global running
     log_message(f"Старт мінімального бота для {SYMBOL} (TEST_MODE: {TEST_MODE})", "STARTUP")
     
     usdt_bal, ltc_bal = get_balances()
@@ -147,7 +163,7 @@ def run_bot():
     prev_ma7 = prev_ma25 = None
     iteration_count = 0
 
-    while True:
+    while running:
         try:
             # Получаем цены
             prices = get_klines_minimal(SYMBOL, INTERVAL)
@@ -186,11 +202,19 @@ def run_bot():
                 prev_ma7, prev_ma25 = curr_ma7, curr_ma25
                 iteration_count += 1
 
-            time.sleep(CHECK_INTERVAL)
+            # Проверяем running перед сном
+            if running:
+                time.sleep(CHECK_INTERVAL)
 
+        except KeyboardInterrupt:
+            log_message("Получен сигнал прерывания", "SHUTDOWN")
+            running = False
         except Exception as e:
             log_message(f"Критична помилка: {e}", "ERROR")
-            time.sleep(CHECK_INTERVAL)
+            if running:
+                time.sleep(CHECK_INTERVAL)
+    
+    log_message("Бот остановлен", "SHUTDOWN")
 
 if __name__ == '__main__':
     run_bot()

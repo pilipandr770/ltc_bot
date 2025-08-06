@@ -1,5 +1,5 @@
 services:
-  - type: worker
+  - type: background-worker
     name: ltc-trading-bot-minimal
     runtime: python
     plan: free
@@ -16,3 +16,7 @@ services:
         value: "3.11.9"
       - key: TEST_MODE
         value: "false"
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false

@@ -29,6 +29,7 @@ TEST_MODE = False
 
 # Глобальные переменные
 running = True
+bot_thread = None
 bot_status = {"status": "starting", "last_update": None, "balance": None}
 
 def log_message(msg, level="INFO"):
@@ -232,6 +233,49 @@ def stop_bot():
     global running
     running = False
     return jsonify({"message": "Bot stopping..."})
+
+@app.route('/start')
+def start_bot():
+    global running, bot_thread
+    if not client:
+        return jsonify({"error": "No API keys configured"}), 400
+    
+    if running:
+        return jsonify({"message": "Bot is already running"})
+    
+    try:
+        running = True
+        bot_thread = threading.Thread(target=trading_bot, daemon=True)
+        bot_thread.start()
+        log_message("Торговый бот запущен через API", "STARTUP")
+        return jsonify({"message": "Bot started successfully"})
+    except Exception as e:
+        running = False
+        return jsonify({"error": f"Failed to start bot: {str(e)}"}), 500
+
+@app.route('/status')
+def status():
+    return jsonify({
+        "bot_status": bot_status["status"],
+        "running": running,
+        "last_update": bot_status.get("last_update"),
+        "balance": bot_status.get("balance"),
+        "has_api_keys": client is not None
+    })
+
+# Автозапуск бота при импорте (для gunicorn)
+if client and API_KEY and API_SECRET:
+    try:
+        if not 'bot_thread' in globals() or bot_thread is None:
+            running = True
+            bot_thread = threading.Thread(target=trading_bot, daemon=True)
+            bot_thread.start()
+            log_message("Торговый бот запущен автоматически (gunicorn)", "STARTUP")
+    except Exception as e:
+        log_message(f"Ошибка автозапуска бота: {e}", "ERROR")
+        running = False
+else:
+    log_message("Автозапуск бота пропущен: нет API ключей", "WARNING")
 
 if __name__ == '__main__':
     # Запускаем торговый бот в отдельном потоке

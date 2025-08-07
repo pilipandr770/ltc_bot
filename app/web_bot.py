@@ -7,7 +7,16 @@ import threading
 from datetime import datetime
 from binance.client import Client
 from binance.enums import *
-from dotenv import load_dotenv
+from doten                        if should_hold_ltc and not currently_holding_ltc and current_usdt >= MIN_NOTIONAL:
+                            log_message("🔄 АВТОКОРРЕКЦИЯ: MA7>MA25, но держим USDT - покупаем LTC", "AUTOCORRECT")
+                            place_buy_order(SYMBOL, current_usdt)
+                            log_message("💰 Позиция скорректирована: переход на LTC", "AUTOCORRECT")
+                            last_autocorrect_time = current_time
+                        elif not should_hold_ltc and currently_holding_ltc and ltc_current_value >= MIN_NOTIONAL:
+                            log_message("🔄 АВТОКОРРЕКЦИЯ: MA7<MA25, но держим LTC - продаем LTC", "AUTOCORRECT")
+                            place_sell_order(SYMBOL, current_ltc)
+                            log_message("💰 Позиция скорректирована: переход на USDT", "AUTOCORRECT")
+                            last_autocorrect_time = current_time load_dotenv
 import requests
 from flask import Flask, jsonify
 
@@ -174,6 +183,7 @@ def trading_bot():
     log_message(f"Старт веб-бота для {SYMBOL}", "STARTUP")
     prev_ma7 = prev_ma25 = None
     iteration_count = 0
+    last_autocorrect_time = 0
 
     while running:
         try:
@@ -210,23 +220,25 @@ def trading_bot():
                 })
                 
                 if prev_ma7 is not None:
-                    # Одноразовая автокоррекция при запуске (первая итерация)
-                    if iteration_count == 1:
-                        current_price = prices[-1]
-                        ltc_current_value = current_ltc * current_price
-                        
-                        # Продаем LTC если MA7 < MA25 и стоимость LTC больше MIN_NOTIONAL
-                        if curr_ma7 < curr_ma25 and ltc_current_value >= MIN_NOTIONAL:
-                            log_message("🔄 АВТОКОРРЕКЦИЯ: MA7<MA25, продаем LTC для выравнивания стратегии", "AUTOCORRECT")
-                            place_sell_order(SYMBOL, current_ltc)
-                            log_message("💰 Позиция скорректирована: переход на USDT", "AUTOCORRECT")
-                        elif curr_ma7 < curr_ma25 and ltc_current_value < MIN_NOTIONAL:
-                            log_message(f"🔄 АВТОКОРРЕКЦИЯ ПРОПУЩЕНА: LTC стоимость {ltc_current_value:.2f} < {MIN_NOTIONAL} USDT (пыль)", "AUTOCORRECT")
-                        # Покупаем LTC если MA7 > MA25 и баланс USDT больше MIN_NOTIONAL
-                        elif curr_ma7 > curr_ma25 and current_usdt >= MIN_NOTIONAL:
-                            log_message("🔄 АВТОКОРРЕКЦИЯ: MA7>MA25, покупаем LTC для выравнивания стратегии", "AUTOCORRECT")
-                            place_buy_order(SYMBOL, current_usdt)
-                            log_message("💰 Позиция скорректирована: переход на LTC", "AUTOCORRECT")
+                    # Постоянная автокоррекция позиции при несоответствии стратегии (не чаще раза в 5 минут)
+                    current_time = time.time()
+                    if current_time - last_autocorrect_time > 300:  # 5 минут
+                    current_price = prices[-1]
+                    ltc_current_value = current_ltc * current_price
+                    
+                    # Определяем нужную позицию по стратегии
+                    should_hold_ltc = curr_ma7 > curr_ma25
+                    currently_holding_ltc = ltc_current_value >= MIN_ASSET_VALUE
+                    
+                    # Если позиция не соответствует стратегии - корректируем
+                    if should_hold_ltc and not currently_holding_ltc and current_usdt >= MIN_NOTIONAL:
+                        log_message("� АВТОКОРРЕКЦИЯ: MA7>MA25, но держим USDT - покупаем LTC", "AUTOCORRECT")
+                        place_buy_order(SYMBOL, current_usdt)
+                        log_message("� Позиция скорректирована: переход на LTC", "AUTOCORRECT")
+                    elif not should_hold_ltc and currently_holding_ltc and ltc_current_value >= MIN_NOTIONAL:
+                        log_message("🔄 АВТОКОРРЕКЦИЯ: MA7<MA25, но держим LTC - продаем LTC", "AUTOCORRECT")
+                        place_sell_order(SYMBOL, current_ltc)
+                        log_message("💰 Позиция скорректирована: переход на USDT", "AUTOCORRECT")
                     
                     # Логика торговли на основе пересечений MA
                     if prev_ma7 < prev_ma25 and curr_ma7 > curr_ma25:

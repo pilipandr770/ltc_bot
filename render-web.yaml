@@ -12,3 +12,7 @@ services:
         sync: false
       - key: TEST_MODE
         value: "false"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+    healthCheckPath: "/health"
+    autoDeploy: true

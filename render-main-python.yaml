@@ -1,10 +1,10 @@
 services:
   - type: web
-    name: ltc-trading-bot
+    name: ltc-trading-bot-python-direct
     env: python
     plan: free
     buildCommand: pip install --no-cache-dir -r requirements.txt
-    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 1 --timeout 30 wsgi:app
+    startCommand: python main.py
     envVars:
       - key: BINANCE_API_KEY
         sync: false
@@ -14,5 +14,7 @@ services:
         value: "false"
       - key: PYTHONUNBUFFERED
         value: "1"
+      - key: PORT
+        value: "10000"
     healthCheckPath: "/health"
     autoDeploy: true

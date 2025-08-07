@@ -1,10 +1,10 @@
 services:
   - type: web
-    name: ltc-trading-bot
+    name: ltc-trading-bot-simple
     env: python
     plan: free
     buildCommand: pip install --no-cache-dir -r requirements.txt
-    startCommand: gunicorn --config gunicorn.conf.py app:app
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 1 --timeout 30 app:app
     envVars:
       - key: BINANCE_API_KEY
         sync: false

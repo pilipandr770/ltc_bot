@@ -174,6 +174,7 @@ def trading_bot():
     log_message(f"Старт веб-бота для {SYMBOL}", "STARTUP")
     prev_ma7 = prev_ma25 = None
     iteration_count = 0
+    last_autocorrect_time = 0  # Инициализируем время последней автокоррекции
 
     while running:
         try:

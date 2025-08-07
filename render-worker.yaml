@@ -1,10 +1,10 @@
 services:
-  - type: web
-    name: ltc-trading-bot
+  - type: worker
+    name: ltc-bot-worker
     env: python
     plan: free
     buildCommand: pip install --no-cache-dir -r requirements.txt
-    startCommand: python app/web_bot.py
+    startCommand: python app/bot.py
     envVars:
       - key: BINANCE_API_KEY
         sync: false
@@ -14,5 +14,4 @@ services:
         value: "false"
       - key: PYTHONUNBUFFERED
         value: "1"
-    healthCheckPath: "/health"
     autoDeploy: true

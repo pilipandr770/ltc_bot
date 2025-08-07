@@ -1,11 +1,13 @@
+import os
 import multiprocessing
 
-# Server socket
-bind = "0.0.0.0:8000"
+# Server socket - используем переменную PORT от Render
+port = os.environ.get("PORT", "5000")
+bind = f"0.0.0.0:{port}"
 backlog = 2048
 
-# Worker processes
-workers = multiprocessing.cpu_count() * 2 + 1
+# Worker processes - ограничиваем для free tier
+workers = 1  # Используем 1 worker для free tier Render
 worker_class = "sync"
 worker_connections = 1000
 timeout = 30

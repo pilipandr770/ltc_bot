@@ -119,15 +119,22 @@ def place_buy_order(symbol, usdt_amount):
         ticker = client.get_symbol_ticker(symbol=symbol)
         price = float(ticker['price'])
         quantity = round((usdt_amount * TRADE_PERCENTAGE) / price, QUANTITY_PRECISION)
+        notional_value = usdt_amount * TRADE_PERCENTAGE
         
-        if quantity >= MIN_QUANTITY:
+        log_message(f"Попытка покупки: {quantity:.6f} LTC за {price:.4f} USDT = {notional_value:.2f} USDT", "INFO")
+        
+        if quantity >= MIN_QUANTITY and notional_value >= MIN_NOTIONAL:
             if not TEST_MODE:
                 order = client.order_market_buy(symbol=symbol, quantity=quantity)
-                log_message(f"✅ BUY: {quantity} LTC за ~{usdt_amount:.2f} USDT", "ORDER")
+                log_message(f"✅ BUY: {quantity:.6f} LTC за {notional_value:.2f} USDT", "ORDER")
                 return order
             else:
-                log_message(f"🧪 TEST BUY: {quantity} LTC", "TEST")
+                log_message(f"🧪 TEST BUY: {quantity:.6f} LTC за {notional_value:.2f} USDT", "TEST")
                 return {"status": "TEST"}
+        elif quantity < MIN_QUANTITY:
+            log_message(f"❌ Слишком мало LTC для покупки: {quantity:.6f} < {MIN_QUANTITY}", "WARNING")
+        else:
+            log_message(f"❌ Слишком малая сумма сделки: {notional_value:.2f} < {MIN_NOTIONAL} USDT", "WARNING")
     except Exception as e:
         log_message(f"❌ Помилка покупки: {e}", "ERROR")
     return None
@@ -224,13 +231,19 @@ def trading_bot():
                     # Логика торговли на основе пересечений MA
                     if prev_ma7 < prev_ma25 and curr_ma7 > curr_ma25:
                         log_message("📈 Сигнал BUY: MA7 перетнула MA25 вгору", "SIGNAL")
-                        if current_usdt >= 1.0:
+                        if current_usdt >= MIN_NOTIONAL:
                             place_buy_order(SYMBOL, current_usdt)
+                        else:
+                            log_message(f"   ⚠️ Недостатньо USDT для покупки: {current_usdt:.2f} < {MIN_NOTIONAL}", "WARNING")
                     
                     elif prev_ma7 > prev_ma25 and curr_ma7 < curr_ma25:
                         log_message("📉 Сигнал SELL: MA7 перетнула MA25 вниз", "SIGNAL")
-                        if current_ltc >= MIN_QUANTITY:
+                        current_price = prices[-1]
+                        ltc_value = current_ltc * current_price
+                        if ltc_value >= MIN_NOTIONAL:
                             place_sell_order(SYMBOL, current_ltc)
+                        else:
+                            log_message(f"   ⚠️ Недостатньо LTC для продажу: {ltc_value:.2f} USDT < {MIN_NOTIONAL}", "WARNING")
 
                 prev_ma7, prev_ma25 = curr_ma7, curr_ma25
                 iteration_count += 1

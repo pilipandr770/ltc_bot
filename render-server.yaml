@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: ltc-trading-bot
+    name: ltc-trading-bot-server
     env: python
     plan: free
     buildCommand: pip install --no-cache-dir -r requirements.txt

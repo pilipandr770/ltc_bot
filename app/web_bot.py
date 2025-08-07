@@ -78,6 +78,12 @@ def get_symbol_info(symbol):
 
 QUANTITY_PRECISION, MIN_QUANTITY = get_symbol_info(SYMBOL)
 
+# Минимальная стоимость сделки для Binance (обычно 10 USDT)
+MIN_NOTIONAL = 10.0
+
+# Минимальная сумма для определения основного актива (5 USDT)  
+MIN_ASSET_VALUE = 5.0
+
 def get_balances():
     if not client:
         return 0.0, 0.0
@@ -132,17 +138,27 @@ def place_sell_order(symbol, ltc_amount):
         return {"status": "TEST"}
     try:
         quantity = round(ltc_amount * TRADE_PERCENTAGE, QUANTITY_PRECISION)
+        # Получаем текущую цену для расчета notional value
+        current_price = float(client.get_symbol_ticker(symbol=symbol)['price'])
+        notional_value = quantity * current_price
         
-        if quantity >= MIN_QUANTITY:
+        log_message(f"Попытка продажи: {quantity:.6f} LTC за {current_price:.4f} USDT = {notional_value:.2f} USDT", "INFO")
+        
+        if quantity >= MIN_QUANTITY and notional_value >= MIN_NOTIONAL:
             if not TEST_MODE:
                 order = client.order_market_sell(symbol=symbol, quantity=quantity)
-                log_message(f"✅ SELL: {quantity} LTC", "ORDER")
+                log_message(f"✅ SELL: {quantity:.6f} LTC за {notional_value:.2f} USDT", "ORDER")
                 return order
             else:
-                log_message(f"🧪 TEST SELL: {quantity} LTC", "TEST")
+                log_message(f"🧪 TEST SELL: {quantity:.6f} LTC за {notional_value:.2f} USDT", "TEST")
                 return {"status": "TEST"}
+        elif quantity < MIN_QUANTITY:
+            log_message(f"❌ Слишком мало LTC для продажи: {quantity:.6f} < {MIN_QUANTITY}", "WARNING")
+        else:
+            log_message(f"❌ Слишком малая сумма сделки: {notional_value:.2f} < {MIN_NOTIONAL} USDT", "WARNING")
     except Exception as e:
         log_message(f"❌ Помилка продажу: {e}", "ERROR")
+    return None
     return None
 
 def trading_bot():
@@ -167,12 +183,14 @@ def trading_bot():
                     bot_status["balance"] = f"{usdt_bal:.4f} USDT | {ltc_bal:.6f} LTC"
                 
                 current_usdt, current_ltc = get_balances()
-                current_asset = "LTC" if current_ltc >= MIN_QUANTITY else "USDT"
+                # Определяем основной актив по стоимости, а не только по количеству
+                ltc_value = current_ltc * current_price
+                current_asset = "LTC" if ltc_value >= MIN_ASSET_VALUE else "USDT"
                 ma_direction = "MA7>MA25" if curr_ma7 > curr_ma25 else "MA7<MA25"
                 should_have = "LTC" if curr_ma7 > curr_ma25 else "USDT"
                 status_emoji = "✅" if current_asset == should_have else "⚠️"
                 
-                log_message(f"Ціна: {current_price:.4f} | MA7={curr_ma7:.4f}, MA25={curr_ma25:.4f} | {ma_direction} | Актив: {current_asset} {status_emoji}", "MA")
+                log_message(f"Ціна: {current_price:.4f} | MA7={curr_ma7:.4f}, MA25={curr_ma25:.4f} | {ma_direction} | Актив: {current_asset} {status_emoji} (USDT: {current_usdt:.2f}, LTC: {ltc_value:.2f})", "MA")
                 
                 bot_status.update({
                     "status": "running",
@@ -185,6 +203,25 @@ def trading_bot():
                 })
                 
                 if prev_ma7 is not None:
+                    # Одноразовая автокоррекция при запуске (первая итерация)
+                    if iteration_count == 1:
+                        current_price = prices[-1]
+                        ltc_current_value = current_ltc * current_price
+                        
+                        # Продаем LTC если MA7 < MA25 и стоимость LTC больше MIN_NOTIONAL
+                        if curr_ma7 < curr_ma25 and ltc_current_value >= MIN_NOTIONAL:
+                            log_message("🔄 АВТОКОРРЕКЦИЯ: MA7<MA25, продаем LTC для выравнивания стратегии", "AUTOCORRECT")
+                            place_sell_order(SYMBOL, current_ltc)
+                            log_message("💰 Позиция скорректирована: переход на USDT", "AUTOCORRECT")
+                        elif curr_ma7 < curr_ma25 and ltc_current_value < MIN_NOTIONAL:
+                            log_message(f"🔄 АВТОКОРРЕКЦИЯ ПРОПУЩЕНА: LTC стоимость {ltc_current_value:.2f} < {MIN_NOTIONAL} USDT (пыль)", "AUTOCORRECT")
+                        # Покупаем LTC если MA7 > MA25 и баланс USDT больше MIN_NOTIONAL
+                        elif curr_ma7 > curr_ma25 and current_usdt >= MIN_NOTIONAL:
+                            log_message("🔄 АВТОКОРРЕКЦИЯ: MA7>MA25, покупаем LTC для выравнивания стратегии", "AUTOCORRECT")
+                            place_buy_order(SYMBOL, current_usdt)
+                            log_message("💰 Позиция скорректирована: переход на LTC", "AUTOCORRECT")
+                    
+                    # Логика торговли на основе пересечений MA
                     if prev_ma7 < prev_ma25 and curr_ma7 > curr_ma25:
                         log_message("📈 Сигнал BUY: MA7 перетнула MA25 вгору", "SIGNAL")
                         if current_usdt >= 1.0:

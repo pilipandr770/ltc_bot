@@ -1,355 +1,670 @@
-# web_bot.py - Версия для деплоя как Web Service (ВИПРАВЛЕНА ВЕРСІЯ)
+# web_bot.py - Простой спот-бот для переключения между активами по пересечению MA7/MA25
+# MA7 > MA25 = держим коин, MA7 < MA25 = держим USDT
 import os
+import json
 import time
-import signal
-import sys
+import math
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Tuple, Optional, Dict, Any
+from flask import Flask, jsonify
+from dotenv import load_dotenv
 from binance.client import Client
 from binance.enums import *
-from dotenv import load_dotenv
-import requests
-from flask import Flask, jsonify
+from binance.exceptions import BinanceAPIException, BinanceOrderException
 
-# Завантаження ключів з файлу .env
+# ========== Простая логика переключения активов ==========
+class AssetSwitcher:
+    """Простой класс для переключения между активами по MA сигналам"""
+    
+    def __init__(self, client: Optional[Client], symbol: str):
+        self.client = client
+        self.symbol = symbol
+        self.base_asset = symbol[:-4] if symbol.endswith("USDT") else symbol.split("USDT")[0]
+        self.quote_asset = "USDT"
+        self.last_switch_time = 0
+        self.min_switch_interval = 20  # минимум 20 секунд между переключениями
+    
+    def should_hold_base(self, ma_short: float, ma_long: float) -> bool:
+        """Определить, должны ли мы держать базовый актив (коин)"""
+        return ma_short > ma_long
+    
+    def get_current_asset_preference(self, usdt_balance: float, base_balance: float, current_price: float) -> str:
+        """Определить какой актив мы сейчас держим"""
+        usdt_value = usdt_balance
+        base_value = base_balance * current_price
+        
+        # Считаем что держим тот актив, которого больше по стоимости
+        if base_value > usdt_value and base_value > 5.0:  # минимум $5
+            return self.base_asset
+        else:
+            return self.quote_asset
+    
+    def need_to_switch(self, current_asset: str, should_hold: str) -> bool:
+        """Нужно ли переключать актив"""
+        current_time = time.time()
+        
+        # Проверяем кулдаун
+        if current_time - self.last_switch_time < self.min_switch_interval:
+            return False
+        
+        return current_asset != should_hold
+    
+    def execute_switch(self, from_asset: str, to_asset: str, balance: float, current_price: float, step: float) -> bool:
+        """Выполнить переключение актива"""
+        try:
+            if from_asset == self.base_asset and to_asset == self.quote_asset:
+                # Продаем коин за USDT
+                return self._sell_base_for_usdt(balance, step)
+            elif from_asset == self.quote_asset and to_asset == self.base_asset:
+                # Покупаем коин за USDT
+                return self._buy_base_with_usdt(balance, current_price, step)
+            return False
+        except Exception as e:
+            log(f"Ошибка переключения {from_asset} -> {to_asset}: {e}", "ERROR")
+            return False
+    
+    def _sell_base_for_usdt(self, base_qty: float, step: float) -> bool:
+        """Продать весь базовый актив за USDT"""
+        if TEST_MODE:
+            log(f"🧪 TEST SELL: {base_qty:.6f} {self.base_asset} -> USDT", "TEST")
+            self.last_switch_time = time.time()
+            return True
+        
+        if not self.client:
+            log(f"❌ Нет подключения к Binance API", "ERROR")
+            return False
+        
+        # Округляем количество согласно требованиям биржи
+        qty = round_step(base_qty * 0.999, step)  # 99.9% для учета комиссий
+        
+        log(f"🔢 РАСЧЕТ ПРОДАЖИ: Исходное количество={base_qty:.6f}, После округления={qty:.6f} (step={step})", "CALC")
+        
+        if qty <= 0:
+            log(f"❌ Количество для продажи слишком мало: {qty:.6f}", "WARN")
+            return False
+        
+        try:
+            log(f"📤 ОТПРАВКА ОРДЕРА НА ПРОДАЖУ: {qty:.6f} {self.base_asset}", "ORDER")
+            order = self.client.order_market_sell(symbol=self.symbol, quantity=qty)
+            
+            # Подробная информация об ордере
+            if 'fills' in order and order['fills']:
+                total_usdt = sum(float(fill['price']) * float(fill['qty']) for fill in order['fills'])
+                avg_price = total_usdt / float(order['executedQty']) if float(order['executedQty']) > 0 else 0
+                log(f"✅ ПРОДАЖА ВЫПОЛНЕНА: {order['executedQty']} {self.base_asset} за {total_usdt:.2f} USDT (средняя цена: {avg_price:.4f})", "TRADE")
+            else:
+                log(f"✅ ПРОДАЖА ВЫПОЛНЕНА: {qty:.6f} {self.base_asset} -> USDT", "TRADE")
+            
+            self.last_switch_time = time.time()
+            return True
+        except Exception as e:
+            log(f"❌ ОШИБКА ПРОДАЖИ: {e}", "ERROR")
+            return False
+    
+    def _buy_base_with_usdt(self, usdt_amount: float, current_price: float, step: float) -> bool:
+        """Купить базовый актив за весь USDT"""
+        if TEST_MODE:
+            qty = usdt_amount / current_price
+            log(f"🧪 TEST BUY: {usdt_amount:.2f} USDT -> {qty:.6f} {self.base_asset}", "TEST")
+            self.last_switch_time = time.time()
+            return True
+        
+        if not self.client:
+            log(f"❌ Нет подключения к Binance API", "ERROR")
+            return False
+        
+        # Рассчитываем количество с учетом комиссий
+        usdt_to_spend = usdt_amount * 0.999  # 99.9% для учета комиссий
+        qty = round_step(usdt_to_spend / current_price, step)
+        
+        log(f"🔢 РАСЧЕТ ПОКУПКИ: USDT={usdt_amount:.2f}, К трате={usdt_to_spend:.2f}, Цена={current_price:.4f}, Количество={qty:.6f} (step={step})", "CALC")
+        
+        if qty <= 0 or usdt_to_spend < 10:  # минимум $10
+            log(f"❌ Сумма для покупки слишком мала: {usdt_to_spend:.2f} USDT (минимум $10)", "WARN")
+            return False
+        
+        try:
+            log(f"📤 ОТПРАВКА ОРДЕРА НА ПОКУПКУ: {qty:.6f} {self.base_asset} за {usdt_to_spend:.2f} USDT", "ORDER")
+            order = self.client.order_market_buy(symbol=self.symbol, quantity=qty)
+            
+            # Подробная информация об ордере
+            if 'fills' in order and order['fills']:
+                total_cost = sum(float(fill['price']) * float(fill['qty']) for fill in order['fills'])
+                avg_price = total_cost / float(order['executedQty']) if float(order['executedQty']) > 0 else 0
+                log(f"✅ ПОКУПКА ВЫПОЛНЕНА: {order['executedQty']} {self.base_asset} за {total_cost:.2f} USDT (средняя цена: {avg_price:.4f})", "TRADE")
+            else:
+                log(f"✅ ПОКУПКА ВЫПОЛНЕНА: {usdt_to_spend:.2f} USDT -> {qty:.6f} {self.base_asset}", "TRADE")
+            
+            self.last_switch_time = time.time()
+            return True
+        except Exception as e:
+            log(f"❌ ОШИБКА ПОКУПКИ: {e}", "ERROR")
+            return False
+
+# ========== Загрузка окружения ==========
 load_dotenv()
-API_KEY = os.getenv('BINANCE_API_KEY')
-API_SECRET = os.getenv('BINANCE_API_SECRET')
+API_KEY = os.getenv("BINANCE_API_KEY", "").strip() or None
+API_SECRET = os.getenv("BINANCE_API_SECRET", "").strip() or None
+SYMBOL = os.getenv("SYMBOL", "BNBUSDT").upper()
+INTERVAL = os.getenv("INTERVAL", "5m")  # 1m,3m,5m,15m,1h,...
+MA_SHORT = int(os.getenv("MA_SHORT", "7"))
+MA_LONG = int(os.getenv("MA_LONG", "25"))
+
+# Основные параметры
+TEST_MODE = os.getenv("TEST_MODE", "true").lower() == "true"
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "20"))   # проверка каждые 20 секунд
+STATE_PATH = os.getenv("STATE_PATH", "state.json")
+
+# Фильтр шума для кроса (мин. разница между MA в % от цены)
+MA_SPREAD_BPS = float(os.getenv("MA_SPREAD_BPS", "5.0"))  # 5 б.п. = 0.05%
+
+# Дополнительные параметры
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
+HEALTH_CHECK_INTERVAL = int(os.getenv("HEALTH_CHECK_INTERVAL", "300"))
+MIN_BALANCE_USDT = float(os.getenv("MIN_BALANCE_USDT", "10.0"))
 
 app = Flask(__name__)
 
-# Налаштування бота
-SYMBOL = 'BNBUSDT'
-INTERVAL = Client.KLINE_INTERVAL_5MINUTE
-MA_SHORT = 7
-MA_LONG = 25
-CHECK_INTERVAL = 20
-TRADE_PERCENTAGE = 0.95
-TEST_MODE = False
-
 # Глобальные переменные
-running = True
-bot_thread = None
-bot_status = {"status": "starting", "last_update": None, "balance": None}
+client: Optional[Client] = None
+asset_switcher: Optional[AssetSwitcher] = None
+running = False
+last_action_ts = 0
+last_health_check = 0
+error_count = 0
 
-def log_message(msg, level="INFO"):
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{ts}] [{level}] {msg}")
-    sys.stdout.flush()
+bot_status = {
+    "status": "idle", 
+    "symbol": SYMBOL, 
+    "current_asset": "USDT",  # какой актив держим сейчас
+    "should_hold": "USDT",    # какой актив должны держать по стратегии
+    "test_mode": TEST_MODE,
+    "last_update": None,
+    "balance_usdt": 0.0,
+    "balance_base": 0.0,
+    "current_price": 0.0,
+    "ma_short": 0.0,
+    "ma_long": 0.0,
+    "error_count": 0,
+    "uptime": 0,
+    "last_switch": None,
+    "switches_count": 0
+}
 
-# Подключение к Binance
-if API_KEY and API_SECRET:
-    try:
-        client = Client(API_KEY, API_SECRET)
-        server_time = client.get_server_time()
-        local_time = int(time.time() * 1000)
-        time_offset = server_time['serverTime'] - local_time
-        
-        if abs(time_offset) > 500:
-            client.timestamp_offset = time_offset - 1000
-            log_message(f"Корекція часу: {time_offset}ms", "TIME")
-        
-        client.ping()
-        log_message("Підключення до Binance успішне", "SUCCESS")
-        bot_status["status"] = "connected"
-    except Exception as e:
-        log_message(f"Помилка підключення: {e}", "ERROR")
-        client = None
-        bot_status["status"] = "error"
-else:
-    client = None
-    bot_status["status"] = "no_api_keys"
+# ========== Утилиты логов ==========
+def log(msg: str, level: str = "INFO"):
+    ts = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{ts}] [{level}] {msg}", flush=True)
 
-def get_symbol_info(symbol):
-    if not client:
-        return 6, 0.0001
-    info = client.get_exchange_info()
-    for s in info['symbols']:
-        if s['symbol'] == symbol:
-            prec = 6
-            min_qty = 0.0001
-            for f in s['filters']:
-                if f['filterType'] == 'LOT_SIZE':
-                    step = float(f['stepSize'])
-                    min_qty = float(f['minQty'])
-                    prec = len(str(step).split('.')[-1].rstrip('0'))
-            return prec, min_qty
-    return 6, 0.0001
-
-QUANTITY_PRECISION, MIN_QUANTITY = get_symbol_info(SYMBOL)
-
-# Минимальная стоимость сделки для Binance (обычно 10 USDT)
-MIN_NOTIONAL = 10.0
-
-# Минимальная сумма для определения основного актива (5 USDT)  
-MIN_ASSET_VALUE = 5.0
-
-def get_balances():
-    if not client:
-        return 0.0, 0.0
-    try:
-        usdt_balance = float(client.get_asset_balance('USDT')['free'])
-        bnb_balance = float(client.get_asset_balance('BNB')['free'])
-        return usdt_balance, bnb_balance
-    except Exception as e:
-        log_message(f"Помилка балансу: {e}", "ERROR")
-        return 0.0, 0.0
-
-def get_klines_minimal(symbol, interval, limit=MA_LONG+5):
-    if not client:
-        return [119.0] * limit  # Фиктивные данные
-    try:
-        klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
-        closes = [float(kline[4]) for kline in klines]
-        return closes
-    except Exception:
-        return [119.0] * limit
-
-def calculate_ma_simple(prices, period):
-    if len(prices) < period:
-        return None
-    recent_prices = prices[-period:]
-    return sum(recent_prices) / len(recent_prices)
-
-def place_buy_order(symbol, usdt_amount):
-    if not client:
-        log_message("🧪 TEST BUY (no API)", "TEST")
-        return {"status": "TEST"}
-    try:
-        ticker = client.get_symbol_ticker(symbol=symbol)
-        price = float(ticker['price'])
-        quantity = round((usdt_amount * TRADE_PERCENTAGE) / price, QUANTITY_PRECISION)
-        notional_value = usdt_amount * TRADE_PERCENTAGE
-        
-        log_message(f"Попытка покупки: {quantity:.6f} BNB за {price:.4f} USDT = {notional_value:.2f} USDT", "INFO")
-        
-        if quantity >= MIN_QUANTITY and notional_value >= MIN_NOTIONAL:
-            if not TEST_MODE:
-                order = client.order_market_buy(symbol=symbol, quantity=quantity)
-                log_message(f"✅ BUY: {quantity:.6f} BNB за {notional_value:.2f} USDT", "ORDER")
-                return order
-            else:
-                log_message(f"🧪 TEST BUY: {quantity:.6f} BNB за {notional_value:.2f} USDT", "TEST")
-                return {"status": "TEST"}
-        elif quantity < MIN_QUANTITY:
-            log_message(f"❌ Слишком мало BNB для покупки: {quantity:.6f} < {MIN_QUANTITY}", "WARNING")
-        else:
-            log_message(f"❌ Слишком малая сумма сделки: {notional_value:.2f} < {MIN_NOTIONAL} USDT", "WARNING")
-    except Exception as e:
-        log_message(f"❌ Помилка покупки: {e}", "ERROR")
-    return None
-
-def place_sell_order(symbol, bnb_amount):
-    if not client:
-        log_message("🧪 TEST SELL (no API)", "TEST")
-        return {"status": "TEST"}
-    try:
-        quantity = round(bnb_amount * TRADE_PERCENTAGE, QUANTITY_PRECISION)
-        # Получаем текущую цену для расчета notional value
-        current_price = float(client.get_symbol_ticker(symbol=symbol)['price'])
-        notional_value = quantity * current_price
-        
-        log_message(f"Попытка продажи: {quantity:.6f} BNB за {current_price:.4f} USDT = {notional_value:.2f} USDT", "INFO")
-        
-        if quantity >= MIN_QUANTITY and notional_value >= MIN_NOTIONAL:
-            if not TEST_MODE:
-                order = client.order_market_sell(symbol=symbol, quantity=quantity)
-                log_message(f"✅ SELL: {quantity:.6f} BNB за {notional_value:.2f} USDT", "ORDER")
-                return order
-            else:
-                log_message(f"🧪 TEST SELL: {quantity:.6f} BNB за {notional_value:.2f} USDT", "TEST")
-                return {"status": "TEST"}
-        elif quantity < MIN_QUANTITY:
-            log_message(f"❌ Слишком мало BNB для продажи: {quantity:.6f} < {MIN_QUANTITY}", "WARNING")
-        else:
-            log_message(f"❌ Слишком малая сумма сделки: {notional_value:.2f} < {MIN_NOTIONAL} USDT", "WARNING")
-    except Exception as e:
-        log_message(f"❌ Помилка продажу: {e}", "ERROR")
-    return None
-
-def trading_bot():
-    global running, bot_status
-    
-    log_message(f"Старт веб-бота для {SYMBOL}", "STARTUP")
-    prev_ma7 = prev_ma25 = None
-    iteration_count = 0
-    last_autocorrect_time = 0  # Инициализируем время последней автокоррекции
-
-    while running:
+# ========== Персистентное состояние ==========
+def load_state():
+    global bot_status
+    if os.path.exists(STATE_PATH):
         try:
-            prices = get_klines_minimal(SYMBOL, INTERVAL)
-            current_price = prices[-1]
+            with open(STATE_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                bot_status.update(data)
+                log("Состояние загружено из state.json", "STATE")
+        except Exception as e:
+            log(f"Не удалось загрузить состояние: {e}", "WARN")
+
+def save_state():
+    try:
+        bot_status["last_update"] = datetime.now(timezone.utc).isoformat()
+        with open(STATE_PATH, "w", encoding="utf-8") as f:
+            json.dump(bot_status, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log(f"Не удалось сохранить состояние: {e}", "WARN")
+
+# ========== Binance клиент ==========
+def init_client():
+    global client, asset_switcher
+    if API_KEY and API_SECRET:
+        try:
+            client = Client(API_KEY, API_SECRET)
+            # синхронизация времени
+            server_time = client.get_server_time()
+            local_time = int(time.time() * 1000)
+            offset = server_time["serverTime"] - local_time
+            if abs(offset) > 1000:
+                client.timestamp_offset = offset
+                log(f"Время синхронизировано, offset={offset}мс", "TIME")
             
-            curr_ma7 = calculate_ma_simple(prices, MA_SHORT)
-            curr_ma25 = calculate_ma_simple(prices, MA_LONG)
+            client.ping()
+            asset_switcher = AssetSwitcher(client, SYMBOL)
             
-            if curr_ma7 is not None and curr_ma25 is not None:
-                if iteration_count % 10 == 0:
-                    usdt_bal, bnb_bal = get_balances()
-                    log_message(f"Баланс: {usdt_bal:.4f} USDT | {bnb_bal:.6f} BNB", "BALANCE")
-                    bot_status["balance"] = f"{usdt_bal:.4f} USDT | {bnb_bal:.6f} BNB"
-                
-                current_usdt, current_bnb = get_balances()
-                # Определяем основной актив по стоимости, а не только по количеству
-                bnb_value = current_bnb * current_price
-                current_asset = "BNB" if bnb_value >= MIN_ASSET_VALUE else "USDT"
-                ma_direction = "MA7>MA25" if curr_ma7 > curr_ma25 else "MA7<MA25"
-                should_have = "BNB" if curr_ma7 > curr_ma25 else "USDT"
-                status_emoji = "✅" if current_asset == should_have else "⚠️"
-                
-                log_message(f"Ціна: {current_price:.4f} | MA7={curr_ma7:.4f}, MA25={curr_ma25:.4f} | {ma_direction} | Актив: {current_asset} {status_emoji} (USDT: {current_usdt:.2f}, BNB: {bnb_value:.2f})", "MA")
-                
+            log("Подключение к Binance успешно", "SUCCESS")
+            bot_status["status"] = "connected"
+            return True
+        except Exception as e:
+            log(f"Ошибка подключения к Binance: {e}", "ERROR")
+            client = None
+            asset_switcher = None
+            bot_status["status"] = "connection_error"
+            return False
+    else:
+        log("API ключи не заданы — TEST_MODE автоматически true", "WARN")
+        asset_switcher = AssetSwitcher(None, SYMBOL)
+        bot_status["status"] = "no_api_keys"
+        return False
+
+# ========== Информация по символу и округление ==========
+def get_symbol_filters(symbol: str):
+    if not client:
+        return 0.001, 0.01, 0.001, 10.0
+    
+    try:
+        info = client.get_symbol_info(symbol)
+        if not info:
+            raise RuntimeError(f"Не найден символ {symbol}")
+        
+        lot = next(f for f in info["filters"] if f["filterType"] == "LOT_SIZE")
+        pricef = next(f for f in info["filters"] if f["filterType"] == "PRICE_FILTER")
+        min_notional = next((f for f in info["filters"] if f["filterType"] == "MIN_NOTIONAL"), None)
+        
+        step = float(lot["stepSize"])
+        tick = float(pricef["tickSize"])
+        min_qty = float(lot["minQty"])
+        min_not = float(min_notional["minNotional"]) if min_notional else 10.0
+        
+        return step, tick, min_qty, min_not
+    except Exception as e:
+        log(f"Ошибка получения фильтров символа: {e}", "ERROR")
+        return 0.001, 0.01, 0.001, 10.0
+
+def round_step(qty: float, step: float) -> float:
+    return math.floor(qty / step) * step
+
+def round_tick(price: float, tick: float) -> float:
+    return round(math.floor(price / tick) * tick, 8)
+
+def retry_on_error(func, max_retries=MAX_RETRIES, delay=1):
+    """Повторяет выполнение функции при ошибках"""
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except (BinanceAPIException, BinanceOrderException) as e:
+            if "Too many requests" in str(e) or "Request rate limit" in str(e):
+                wait_time = delay * (2 ** attempt)
+                log(f"Rate limit, ждем {wait_time}с (попытка {attempt + 1}/{max_retries})", "WARN")
+                time.sleep(wait_time)
+            else:
+                log(f"Binance ошибка (попытка {attempt + 1}/{max_retries}): {e}", "ERROR")
+                if attempt < max_retries - 1:
+                    time.sleep(delay)
+        except Exception as e:
+            log(f"Неожиданная ошибка (попытка {attempt + 1}/{max_retries}): {e}", "ERROR")
+            if attempt < max_retries - 1:
+                time.sleep(delay)
+    
+    raise RuntimeError(f"Не удалось выполнить операцию после {max_retries} попыток")
+
+# ========== Данные и MA ==========
+BINANCE_INTERVALS = {
+    "1m": Client.KLINE_INTERVAL_1MINUTE,
+    "3m": Client.KLINE_INTERVAL_3MINUTE,
+    "5m": Client.KLINE_INTERVAL_5MINUTE,
+    "15m": Client.KLINE_INTERVAL_15MINUTE,
+    "1h": Client.KLINE_INTERVAL_1HOUR,
+    "4h": Client.KLINE_INTERVAL_4HOUR,
+}
+
+def get_closes(symbol: str, interval: str, limit: int = 200):
+    if not client:
+        import random
+        base_price = 600.0 if symbol == "BNBUSDT" else 100.0
+        return [base_price + random.uniform(-5, 5) for _ in range(limit)]
+    
+    def _get_klines():
+        inter = BINANCE_INTERVALS.get(interval, Client.KLINE_INTERVAL_5MINUTE)
+        klines = client.get_klines(symbol=symbol, interval=inter, limit=limit)
+        return [float(k[4]) for k in klines]
+    
+    return retry_on_error(_get_klines)
+
+def ma(arr, period):
+    if len(arr) < period:
+        return None
+    return sum(arr[-period:]) / period
+
+# ========== Балансы ==========
+def get_balances() -> Tuple[float, float]:
+    if not client:
+        return 1000.0, 0.0
+    
+    def _get_balances():
+        base = SYMBOL[:-4] if SYMBOL.endswith("USDT") else SYMBOL.split("USDT")[0]
+        usdt = float(client.get_asset_balance("USDT")["free"])
+        base_bal = float(client.get_asset_balance(base)["free"])
+        return usdt, base_bal
+    
+    return retry_on_error(_get_balances)
+
+# ========== Проверка здоровья системы ==========
+def health_check():
+    global last_health_check, error_count
+    current_time = time.time()
+    
+    if current_time - last_health_check > HEALTH_CHECK_INTERVAL:
+        try:
+            if client:
+                client.ping()
+                usdt_bal, base_bal = get_balances()
                 bot_status.update({
-                    "status": "running",
-                    "last_update": datetime.now().isoformat(),
-                    "price": current_price,
-                    "ma7": curr_ma7,
-                    "ma25": curr_ma25,
-                    "trend": ma_direction,
-                    "current_asset": current_asset
+                    "balance_usdt": usdt_bal,
+                    "balance_base": base_bal,
+                    "error_count": error_count
                 })
                 
-                if prev_ma7 is not None:
-                    # ВИПРАВЛЕННЯ: Флаг для предотвращения двойной торговли
-                    trade_executed = False
+                if error_count > 0:
+                    error_count = max(0, error_count - 1)
                     
-                    # ВИПРАВЛЕННЯ: Логика торговли на основе пересечений MA (приоритет)
-                    if prev_ma7 < prev_ma25 and curr_ma7 > curr_ma25:
-                        log_message("📈 Сигнал BUY: MA7 перетнула MA25 вгору", "SIGNAL")
-                        if current_usdt >= MIN_NOTIONAL:
-                            place_buy_order(SYMBOL, current_usdt)
-                            trade_executed = True
-                            # Обновляем баланс после торговли
-                            current_usdt, current_bnb = get_balances()
-                        else:
-                            log_message(f"   ⚠️ Недостатньо USDT для покупки: {current_usdt:.2f} < {MIN_NOTIONAL}", "WARNING")
-                    
-                    elif prev_ma7 > prev_ma25 and curr_ma7 < curr_ma25:
-                        log_message("📉 Сигнал SELL: MA7 перетнула MA25 вниз", "SIGNAL")
-                        current_price = prices[-1]
-                        bnb_value = current_bnb * current_price
-                        if bnb_value >= MIN_NOTIONAL:
-                            place_sell_order(SYMBOL, current_bnb)
-                            trade_executed = True
-                            # Обновляем баланс после торговли
-                            current_usdt, current_bnb = get_balances()
-                        else:
-                            log_message(f"   ⚠️ Недостатньо BNB для продажу: {bnb_value:.2f} USDT < {MIN_NOTIONAL}", "WARNING")
-                    
-                    # ВИПРАВЛЕННЯ: Автокоррекция позиции только если не было торговли по сигналу
-                    if not trade_executed:
-                        current_time = time.time()
-                        if current_time - last_autocorrect_time > 300:  # 5 минут
-                            current_price = prices[-1]
-                            bnb_current_value = current_bnb * current_price
-                            
-                            # Определяем нужную позицию по стратегии
-                            should_hold_bnb = curr_ma7 > curr_ma25
-                            currently_holding_bnb = bnb_current_value >= MIN_ASSET_VALUE
-                            
-                            # Если позиция не соответствует стратегии - корректируем
-                            if should_hold_bnb and not currently_holding_bnb and current_usdt >= MIN_NOTIONAL:
-                                log_message("🔄 АВТОКОРРЕКЦИЯ: MA7>MA25, но держим USDT - покупаем BNB", "AUTOCORRECT")
-                                place_buy_order(SYMBOL, current_usdt)
-                                log_message("💰 Позиция скорректирована: переход на BNB", "AUTOCORRECT")
-                                last_autocorrect_time = current_time
-                            elif not should_hold_bnb and currently_holding_bnb and bnb_current_value >= MIN_NOTIONAL:
-                                log_message("🔄 АВТОКОРРЕКЦИЯ: MA7<MA25, но держим BNB - продаем BNB", "AUTOCORRECT")
-                                place_sell_order(SYMBOL, current_bnb)
-                                log_message("💰 Позиция скорректирована: переход на USDT", "AUTOCORRECT")
-                                last_autocorrect_time = current_time
-
-                prev_ma7, prev_ma25 = curr_ma7, curr_ma25
-                iteration_count += 1
-
-            if running:
-                time.sleep(CHECK_INTERVAL)
-
+            last_health_check = current_time
+            log("Проверка здоровья системы пройдена", "HEALTH")
         except Exception as e:
-            log_message(f"Помилка: {e}", "ERROR")
-            bot_status["status"] = f"error: {str(e)}"
-            if running:
-                time.sleep(CHECK_INTERVAL)
-    
-    log_message("Бот остановлен", "SHUTDOWN")
+            log(f"Ошибка проверки здоровья: {e}", "ERROR")
+            error_count += 1
 
-# Flask routes
-@app.route('/')
-def home():
+# ========== Основной торговый цикл ==========
+def trading_loop():
+    global running, last_action_ts, bot_status, error_count
+    
+    start_time = time.time()
+    log(f"Старт торгового цикла для {SYMBOL} (TEST_MODE={TEST_MODE})", "START")
+    
+    # Убеждаемся что running = True
+    if not running:
+        log("⚠️ running=False, устанавливаем в True", "WARN")
+        running = True
+    
+    # Получаем фильтры символа
+    step, tick, min_qty, min_notional = get_symbol_filters(SYMBOL)
+    load_state()
+    
+    # Инициализируем asset_switcher если не инициализирован
+    global asset_switcher
+    if asset_switcher is None:
+        log("🔧 Инициализация AssetSwitcher...", "INIT")
+        asset_switcher = AssetSwitcher(client, SYMBOL)
+    
+    cycle_count = 0
+    log(f"🔄 Начинаем основной цикл торговли (running={running})", "LOOP")
+    
+    while running:
+        try:
+            cycle_count += 1
+            log(f"🔄 ЦИКЛ #{cycle_count} ==========================================", "CYCLE")
+            
+            # Обновляем время работы
+            bot_status["uptime"] = int(time.time() - start_time)
+            
+            # Проверка здоровья системы
+            health_check()
+            
+            # Получаем данные
+            log("📊 Получение рыночных данных...", "DATA")
+            prices = get_closes(SYMBOL, INTERVAL, limit=max(MA_LONG * 3, 100))
+            price = prices[-1]
+            usdt_bal, base_bal = get_balances()
+            
+            # Подробный лог балансов
+            base_value = base_bal * price
+            total_value = usdt_bal + base_value
+            log(f"💰 БАЛАНСЫ: USDT={usdt_bal:.2f} | {asset_switcher.base_asset}={base_bal:.6f} (${base_value:.2f}) | ВСЕГО=${total_value:.2f}", "BALANCE")
+            
+            # Обновляем статус
+            bot_status.update({
+                "current_price": price,
+                "balance_usdt": usdt_bal,
+                "balance_base": base_bal
+            })
+            
+            # Проверяем минимальный баланс
+            if total_value < MIN_BALANCE_USDT:
+                log(f"❌ Недостаточный общий баланс для торговли: ${total_value:.2f} < ${MIN_BALANCE_USDT}", "WARN")
+                time.sleep(CHECK_INTERVAL)
+                continue
+            
+            # Рассчитываем MA
+            m1 = ma(prices, MA_SHORT)
+            m2 = ma(prices, MA_LONG)
+            
+            if m1 is not None and m2 is not None:
+                # Подробный лог MA
+                ma_diff = m1 - m2
+                ma_diff_pct = (ma_diff / price) * 100
+                spread_bps = abs(ma_diff / price) * 10000.0
+                
+                log(f"📈 MA АНАЛИЗ: MA7={m1:.4f} | MA25={m2:.4f} | Разница={ma_diff:+.4f} ({ma_diff_pct:+.3f}%) | Спред={spread_bps:.1f}б.п.", "MA")
+                
+                bot_status.update({
+                    "ma_short": m1,
+                    "ma_long": m2
+                })
+                
+                # Проверяем что asset_switcher инициализирован
+                if asset_switcher is None:
+                    log("❌ AssetSwitcher не инициализирован", "ERROR")
+                    time.sleep(CHECK_INTERVAL)
+                    continue
+                
+                # Определяем какой актив должны держать
+                should_hold_base = asset_switcher.should_hold_base(m1, m2)
+                should_hold_asset = asset_switcher.base_asset if should_hold_base else asset_switcher.quote_asset
+                
+                # Определяем какой актив держим сейчас
+                current_asset = asset_switcher.get_current_asset_preference(usdt_bal, base_bal, price)
+                
+                # Подробный лог стратегии
+                trend_direction = "ВОСХОДЯЩИЙ 📈" if m1 > m2 else "НИСХОДЯЩИЙ 📉"
+                strategy_reason = f"MA7 {'>' if m1 > m2 else '<'} MA25"
+                log(f"🎯 СТРАТЕГИЯ: {trend_direction} ({strategy_reason}) → Должны держать {should_hold_asset}", "STRATEGY")
+                log(f"🏦 ТЕКУЩИЙ АКТИВ: {current_asset} (по балансам: USDT=${usdt_bal:.2f}, {asset_switcher.base_asset}=${base_value:.2f})", "CURRENT")
+                
+                # Обновляем статус
+                bot_status.update({
+                    "current_asset": current_asset,
+                    "should_hold": should_hold_asset
+                })
+                
+                # Проверяем фильтр шума
+                if spread_bps < MA_SPREAD_BPS:
+                    log(f"🔇 ФИЛЬТР ШУМА: Спред {spread_bps:.1f}б.п. < {MA_SPREAD_BPS}б.п. - сигнал слишком слабый", "FILTER")
+                    time.sleep(CHECK_INTERVAL)
+                    continue
+                
+                # Проверяем кулдаун
+                time_since_last_switch = time.time() - asset_switcher.last_switch_time
+                if time_since_last_switch < asset_switcher.min_switch_interval:
+                    remaining_cooldown = asset_switcher.min_switch_interval - time_since_last_switch
+                    log(f"⏰ КУЛДАУН: Осталось {remaining_cooldown:.1f}сек до следующего переключения", "COOLDOWN")
+                    time.sleep(CHECK_INTERVAL)
+                    continue
+                
+                # Итоговый статус
+                status_emoji = "✅ СИНХРОНИЗИРОВАНО" if current_asset == should_hold_asset else "⚠️ ТРЕБУЕТСЯ ПЕРЕКЛЮЧЕНИЕ"
+                log(f"📊 СТАТУС: Цена={price:.4f} | Держим={current_asset} | Нужно={should_hold_asset} | {status_emoji}", "STATUS")
+                
+                # Проверяем нужно ли переключать актив
+                if asset_switcher.need_to_switch(current_asset, should_hold_asset):
+                    log(f"🔄 ПЕРЕКЛЮЧЕНИЕ ТРЕБУЕТСЯ: {current_asset} → {should_hold_asset}", "SWITCH")
+                    
+                    # Подробная информация о переключении
+                    if current_asset == asset_switcher.base_asset:
+                        # Продаем базовый актив
+                        log(f"📉 ПРОДАЖА: {base_bal:.6f} {asset_switcher.base_asset} → USDT по цене {price:.4f}", "TRADE_PLAN")
+                        expected_usdt = base_bal * price * 0.999  # с учетом комиссии
+                        log(f"💵 ОЖИДАЕМЫЙ РЕЗУЛЬТАТ: ~{expected_usdt:.2f} USDT (с учетом комиссии 0.1%)", "TRADE_PLAN")
+                        
+                        success = asset_switcher.execute_switch(
+                            current_asset, should_hold_asset, base_bal, price, step
+                        )
+                    else:
+                        # Покупаем базовый актив
+                        log(f"📈 ПОКУПКА: {usdt_bal:.2f} USDT → {asset_switcher.base_asset} по цене {price:.4f}", "TRADE_PLAN")
+                        expected_qty = (usdt_bal * 0.999) / price  # с учетом комиссии
+                        log(f"🪙 ОЖИДАЕМЫЙ РЕЗУЛЬТАТ: ~{expected_qty:.6f} {asset_switcher.base_asset} (с учетом комиссии 0.1%)", "TRADE_PLAN")
+                        
+                        success = asset_switcher.execute_switch(
+                            current_asset, should_hold_asset, usdt_bal, price, step
+                        )
+                    
+                    if success:
+                        bot_status["switches_count"] = bot_status.get("switches_count", 0) + 1
+                        bot_status["last_switch"] = datetime.now(timezone.utc).isoformat()
+                        last_action_ts = time.time()
+                        log(f"✅ ПЕРЕКЛЮЧЕНИЕ ВЫПОЛНЕНО УСПЕШНО! Общее количество переключений: {bot_status['switches_count']}", "SUCCESS")
+                        
+                        # Логируем новые балансы после переключения
+                        new_usdt_bal, new_base_bal = get_balances()
+                        new_base_value = new_base_bal * price
+                        new_total = new_usdt_bal + new_base_value
+                        log(f"💰 НОВЫЕ БАЛАНСЫ: USDT={new_usdt_bal:.2f} | {asset_switcher.base_asset}={new_base_bal:.6f} (${new_base_value:.2f}) | ВСЕГО=${new_total:.2f}", "RESULT")
+                    else:
+                        log(f"❌ ОШИБКА ПЕРЕКЛЮЧЕНИЯ!", "ERROR")
+                        error_count += 1
+                else:
+                    log(f"✅ ПЕРЕКЛЮЧЕНИЕ НЕ ТРЕБУЕТСЯ - активы синхронизированы", "OK")
+            
+            # Обновляем статус
+            bot_status["status"] = "running"
+            save_state()
+            
+            log(f"😴 ОЖИДАНИЕ {CHECK_INTERVAL} секунд до следующего цикла...", "SLEEP")
+            time.sleep(CHECK_INTERVAL)
+            
+        except (BinanceAPIException, BinanceOrderException) as e:
+            emsg = str(e)
+            if "Too many requests" in emsg or "Request rate limit" in emsg:
+                log(f"Rate limit: {e} — сплю 5 сек", "WARN")
+                time.sleep(5)
+            else:
+                log(f"Binance ошибка: {e}", "ERROR")
+                error_count += 1
+                time.sleep(2)
+        except Exception as e:
+            log(f"Неожиданная ошибка: {e}", "ERROR")
+            error_count += 1
+            bot_status["status"] = f"error: {str(e)}"
+            save_state()
+            time.sleep(2)
+    
+    log("Торговый бот остановлен", "SHUTDOWN")
+
+# ========== Flask маршруты ==========
+@app.route("/")
+def root():
     return jsonify({
-        "service": "BNB Trading Bot",
-        "status": bot_status["status"],
-        "last_update": bot_status.get("last_update"),
-        "balance": bot_status.get("balance"),
-        "price": bot_status.get("price"),
-        "ma7": bot_status.get("ma7"),
-        "ma25": bot_status.get("ma25"),
-        "trend": bot_status.get("trend"),
-        "current_asset": bot_status.get("current_asset")
+        "ok": True, 
+        "symbol": SYMBOL, 
+        "status": bot_status.get("status", "idle"), 
+        "current_asset": bot_status.get("current_asset", "USDT"),
+        "should_hold": bot_status.get("should_hold", "USDT"),
+        "test_mode": TEST_MODE,
+        "uptime": bot_status.get("uptime", 0)
     })
 
-@app.route('/health')
+@app.route("/health")
 def health():
-    return jsonify({"status": "healthy", "bot_status": bot_status["status"]})
-
-@app.route('/stop')
-def stop_bot():
-    global running
-    running = False
-    return jsonify({"message": "Bot stopping..."})
-
-@app.route('/start')
-def start_bot():
-    global running, bot_thread
-    if not client:
-        return jsonify({"error": "No API keys configured"}), 400
-    
-    if running:
-        return jsonify({"message": "Bot is already running"})
-    
     try:
-        running = True
-        bot_thread = threading.Thread(target=trading_bot, daemon=True)
-        bot_thread.start()
-        log_message("Торговый бот запущен через API", "STARTUP")
-        return jsonify({"message": "Bot started successfully"})
+        if client:
+            client.ping()
+            return jsonify({"ok": True, "status": "healthy"})
+        else:
+            return jsonify({"ok": True, "status": "test_mode"})
     except Exception as e:
-        running = False
-        return jsonify({"error": f"Failed to start bot: {str(e)}"}), 500
+        return jsonify({"ok": False, "error": str(e)}), 500
 
-@app.route('/status')
+@app.route("/start")
+def start():
+    global running, bot_status
+    if running:
+        return jsonify({"ok": True, "message": "уже работает"})
+    
+    if API_KEY and API_SECRET:
+        init_client()
+    
+    running = True
+    bot_status["status"] = "running"
+    save_state()
+    
+    t = threading.Thread(target=trading_loop, daemon=True)
+    t.start()
+    log("Бот запущен", "START")
+    return jsonify({"ok": True, "mode": "TEST" if TEST_MODE else "LIVE"})
+
+@app.route("/stop")
+def stop():
+    global running, bot_status
+    running = False
+    bot_status["status"] = "stopped"
+    save_state()
+    log("Бот остановлен", "STOP")
+    return jsonify({"ok": True})
+
+@app.route("/status")
 def status():
     return jsonify({
-        "bot_status": bot_status["status"],
-        "running": running,
-        "last_update": bot_status.get("last_update"),
-        "balance": bot_status.get("balance"),
-        "has_api_keys": client is not None
+        "ok": True,
+        "symbol": SYMBOL,
+        "mode": "TEST" if TEST_MODE else "LIVE",
+        "status": bot_status.get("status", "idle"),
+        "current_asset": bot_status.get("current_asset", "USDT"),
+        "should_hold": bot_status.get("should_hold", "USDT"),
+        "current_price": bot_status.get("current_price", 0.0),
+        "balance_usdt": bot_status.get("balance_usdt", 0.0),
+        "balance_base": bot_status.get("balance_base", 0.0),
+        "ma_short": bot_status.get("ma_short", 0.0),
+        "ma_long": bot_status.get("ma_long", 0.0),
+        "error_count": bot_status.get("error_count", 0),
+        "uptime": bot_status.get("uptime", 0),
+        "switches_count": bot_status.get("switches_count", 0),
+        "last_switch": bot_status.get("last_switch"),
+        "last_update": bot_status.get("last_update")
     })
 
-# Автозапуск бота при импорте (для gunicorn)
-if client and API_KEY and API_SECRET:
+@app.route("/config")
+def config():
+    return jsonify({
+        "symbol": SYMBOL,
+        "interval": INTERVAL,
+        "ma_short": MA_SHORT,
+        "ma_long": MA_LONG,
+        "test_mode": TEST_MODE,
+        "check_interval": CHECK_INTERVAL,
+        "ma_spread_bps": MA_SPREAD_BPS,
+        "min_balance_usdt": MIN_BALANCE_USDT
+    })
+
+# ========== Автозапуск для деплоя ==========
+if API_KEY and API_SECRET:
     try:
-        if not 'bot_thread' in globals() or bot_thread is None:
+        if not running:
+            init_client()
             running = True
-            bot_thread = threading.Thread(target=trading_bot, daemon=True)
+            bot_thread = threading.Thread(target=trading_loop, daemon=True)
             bot_thread.start()
-            log_message("Торговый бот запущен автоматически (gunicorn)", "STARTUP")
+            mode = "TEST" if TEST_MODE else "LIVE"
+            log(f"🚀 Торговый бот запущен автоматически в режиме {mode}", "STARTUP")
     except Exception as e:
-        log_message(f"Ошибка автозапуска бота: {e}", "ERROR")
+        log(f"❌ Ошибка автозапуска бота: {e}", "ERROR")
         running = False
 else:
-    log_message("Автозапуск бота пропущен: нет API ключей", "WARNING")
+    log("⚠️ Автозапуск бота пропущен: нет API ключей", "WARNING")
 
-if __name__ == '__main__':
-    # Запускаем торговый бот в отдельном потоке
-    if client:
-        bot_thread = threading.Thread(target=trading_bot, daemon=True)
-        bot_thread.start()
-        log_message("Торговый бот запущен в фоне", "STARTUP")
-    else:
-        log_message("Бот не запущен - нет API ключей", "WARNING")
+# ========== Точка входа ==========
+if __name__ == "__main__":
+    if API_KEY and API_SECRET:
+        init_client()
+        
+        # Запускаем торговый бот в отдельном потоке
+        if not running:
+            running = True
+            bot_thread = threading.Thread(target=trading_loop, daemon=True)
+            bot_thread.start()
+            mode = "TEST" if TEST_MODE else "LIVE"
+            log(f"🚀 Торговый бот запущен в режиме {mode}", "STARTUP")
     
-    # Запускаем Flask сервер
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    port = int(os.getenv("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port)

@@ -1,0 +1,17 @@
+{
+  "status": "running",
+  "symbol": "BNBUSDT",
+  "current_asset": "USDT",
+  "should_hold": "USDT",
+  "test_mode": true,
+  "last_update": "2025-08-09T20:34:17.214217+00:00",
+  "balance_usdt": 22.54072,
+  "balance_base": 0.00141052,
+  "current_price": 805.81,
+  "ma_short": 804.9157142857142,
+  "ma_long": 805.7776000000001,
+  "error_count": 0,
+  "uptime": 43,
+  "last_switch": "2025-08-09T20:26:23.599289+00:00",
+  "switches_count": 1
+}

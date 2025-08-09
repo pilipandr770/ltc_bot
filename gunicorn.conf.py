@@ -24,7 +24,7 @@ loglevel = "info"
 access_log_format = '%(h)s %(l)s %(u)s %(t)s "%(r)s" %(s)s %(b)s "%(f)s" "%(a)s"'
 
 # Process naming
-proc_name = "ltc_trading_bot"
+proc_name = "bnb_trading_bot"
 
 # Server mechanics
 daemon = False

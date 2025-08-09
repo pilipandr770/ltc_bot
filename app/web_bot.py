@@ -1,4 +1,4 @@
-# web_bot.py - Версия для деплоя как Web Service
+# web_bot.py - Версия для деплоя как Web Service (ВИПРАВЛЕНА ВЕРСІЯ)
 import os
 import time
 import signal
@@ -19,7 +19,7 @@ API_SECRET = os.getenv('BINANCE_API_SECRET')
 app = Flask(__name__)
 
 # Налаштування бота
-SYMBOL = 'LTCUSDT'
+SYMBOL = 'BNBUSDT'
 INTERVAL = Client.KLINE_INTERVAL_5MINUTE
 MA_SHORT = 7
 MA_LONG = 25
@@ -89,8 +89,8 @@ def get_balances():
         return 0.0, 0.0
     try:
         usdt_balance = float(client.get_asset_balance('USDT')['free'])
-        ltc_balance = float(client.get_asset_balance('LTC')['free'])
-        return usdt_balance, ltc_balance
+        bnb_balance = float(client.get_asset_balance('BNB')['free'])
+        return usdt_balance, bnb_balance
     except Exception as e:
         log_message(f"Помилка балансу: {e}", "ERROR")
         return 0.0, 0.0
@@ -121,51 +121,50 @@ def place_buy_order(symbol, usdt_amount):
         quantity = round((usdt_amount * TRADE_PERCENTAGE) / price, QUANTITY_PRECISION)
         notional_value = usdt_amount * TRADE_PERCENTAGE
         
-        log_message(f"Попытка покупки: {quantity:.6f} LTC за {price:.4f} USDT = {notional_value:.2f} USDT", "INFO")
+        log_message(f"Попытка покупки: {quantity:.6f} BNB за {price:.4f} USDT = {notional_value:.2f} USDT", "INFO")
         
         if quantity >= MIN_QUANTITY and notional_value >= MIN_NOTIONAL:
             if not TEST_MODE:
                 order = client.order_market_buy(symbol=symbol, quantity=quantity)
-                log_message(f"✅ BUY: {quantity:.6f} LTC за {notional_value:.2f} USDT", "ORDER")
+                log_message(f"✅ BUY: {quantity:.6f} BNB за {notional_value:.2f} USDT", "ORDER")
                 return order
             else:
-                log_message(f"🧪 TEST BUY: {quantity:.6f} LTC за {notional_value:.2f} USDT", "TEST")
+                log_message(f"🧪 TEST BUY: {quantity:.6f} BNB за {notional_value:.2f} USDT", "TEST")
                 return {"status": "TEST"}
         elif quantity < MIN_QUANTITY:
-            log_message(f"❌ Слишком мало LTC для покупки: {quantity:.6f} < {MIN_QUANTITY}", "WARNING")
+            log_message(f"❌ Слишком мало BNB для покупки: {quantity:.6f} < {MIN_QUANTITY}", "WARNING")
         else:
             log_message(f"❌ Слишком малая сумма сделки: {notional_value:.2f} < {MIN_NOTIONAL} USDT", "WARNING")
     except Exception as e:
         log_message(f"❌ Помилка покупки: {e}", "ERROR")
     return None
 
-def place_sell_order(symbol, ltc_amount):
+def place_sell_order(symbol, bnb_amount):
     if not client:
         log_message("🧪 TEST SELL (no API)", "TEST")
         return {"status": "TEST"}
     try:
-        quantity = round(ltc_amount * TRADE_PERCENTAGE, QUANTITY_PRECISION)
+        quantity = round(bnb_amount * TRADE_PERCENTAGE, QUANTITY_PRECISION)
         # Получаем текущую цену для расчета notional value
         current_price = float(client.get_symbol_ticker(symbol=symbol)['price'])
         notional_value = quantity * current_price
         
-        log_message(f"Попытка продажи: {quantity:.6f} LTC за {current_price:.4f} USDT = {notional_value:.2f} USDT", "INFO")
+        log_message(f"Попытка продажи: {quantity:.6f} BNB за {current_price:.4f} USDT = {notional_value:.2f} USDT", "INFO")
         
         if quantity >= MIN_QUANTITY and notional_value >= MIN_NOTIONAL:
             if not TEST_MODE:
                 order = client.order_market_sell(symbol=symbol, quantity=quantity)
-                log_message(f"✅ SELL: {quantity:.6f} LTC за {notional_value:.2f} USDT", "ORDER")
+                log_message(f"✅ SELL: {quantity:.6f} BNB за {notional_value:.2f} USDT", "ORDER")
                 return order
             else:
-                log_message(f"🧪 TEST SELL: {quantity:.6f} LTC за {notional_value:.2f} USDT", "TEST")
+                log_message(f"🧪 TEST SELL: {quantity:.6f} BNB за {notional_value:.2f} USDT", "TEST")
                 return {"status": "TEST"}
         elif quantity < MIN_QUANTITY:
-            log_message(f"❌ Слишком мало LTC для продажи: {quantity:.6f} < {MIN_QUANTITY}", "WARNING")
+            log_message(f"❌ Слишком мало BNB для продажи: {quantity:.6f} < {MIN_QUANTITY}", "WARNING")
         else:
             log_message(f"❌ Слишком малая сумма сделки: {notional_value:.2f} < {MIN_NOTIONAL} USDT", "WARNING")
     except Exception as e:
         log_message(f"❌ Помилка продажу: {e}", "ERROR")
-    return None
     return None
 
 def trading_bot():
@@ -186,19 +185,19 @@ def trading_bot():
             
             if curr_ma7 is not None and curr_ma25 is not None:
                 if iteration_count % 10 == 0:
-                    usdt_bal, ltc_bal = get_balances()
-                    log_message(f"Баланс: {usdt_bal:.4f} USDT | {ltc_bal:.6f} LTC", "BALANCE")
-                    bot_status["balance"] = f"{usdt_bal:.4f} USDT | {ltc_bal:.6f} LTC"
+                    usdt_bal, bnb_bal = get_balances()
+                    log_message(f"Баланс: {usdt_bal:.4f} USDT | {bnb_bal:.6f} BNB", "BALANCE")
+                    bot_status["balance"] = f"{usdt_bal:.4f} USDT | {bnb_bal:.6f} BNB"
                 
-                current_usdt, current_ltc = get_balances()
+                current_usdt, current_bnb = get_balances()
                 # Определяем основной актив по стоимости, а не только по количеству
-                ltc_value = current_ltc * current_price
-                current_asset = "LTC" if ltc_value >= MIN_ASSET_VALUE else "USDT"
+                bnb_value = current_bnb * current_price
+                current_asset = "BNB" if bnb_value >= MIN_ASSET_VALUE else "USDT"
                 ma_direction = "MA7>MA25" if curr_ma7 > curr_ma25 else "MA7<MA25"
-                should_have = "LTC" if curr_ma7 > curr_ma25 else "USDT"
+                should_have = "BNB" if curr_ma7 > curr_ma25 else "USDT"
                 status_emoji = "✅" if current_asset == should_have else "⚠️"
                 
-                log_message(f"Ціна: {current_price:.4f} | MA7={curr_ma7:.4f}, MA25={curr_ma25:.4f} | {ma_direction} | Актив: {current_asset} {status_emoji} (USDT: {current_usdt:.2f}, LTC: {ltc_value:.2f})", "MA")
+                log_message(f"Ціна: {current_price:.4f} | MA7={curr_ma7:.4f}, MA25={curr_ma25:.4f} | {ma_direction} | Актив: {current_asset} {status_emoji} (USDT: {current_usdt:.2f}, BNB: {bnb_value:.2f})", "MA")
                 
                 bot_status.update({
                     "status": "running",
@@ -211,44 +210,54 @@ def trading_bot():
                 })
                 
                 if prev_ma7 is not None:
-                    # Постоянная автокоррекция позиции при несоответствии стратегии (не чаще раза в 5 минут)
-                    current_time = time.time()
-                    if current_time - last_autocorrect_time > 300:  # 5 минут
-                        current_price = prices[-1]
-                        ltc_current_value = current_ltc * current_price
-                        
-                        # Определяем нужную позицию по стратегии
-                        should_hold_ltc = curr_ma7 > curr_ma25
-                        currently_holding_ltc = ltc_current_value >= MIN_ASSET_VALUE
-                        
-                        # Если позиция не соответствует стратегии - корректируем
-                        if should_hold_ltc and not currently_holding_ltc and current_usdt >= MIN_NOTIONAL:
-                            log_message("� АВТОКОРРЕКЦИЯ: MA7>MA25, но держим USDT - покупаем LTC", "AUTOCORRECT")
-                            place_buy_order(SYMBOL, current_usdt)
-                            log_message("� Позиция скорректирована: переход на LTC", "AUTOCORRECT")
-                            last_autocorrect_time = current_time
-                        elif not should_hold_ltc and currently_holding_ltc and ltc_current_value >= MIN_NOTIONAL:
-                            log_message("🔄 АВТОКОРРЕКЦИЯ: MA7<MA25, но держим LTC - продаем LTC", "AUTOCORRECT")
-                            place_sell_order(SYMBOL, current_ltc)
-                            log_message("💰 Позиция скорректирована: переход на USDT", "AUTOCORRECT")
-                            last_autocorrect_time = current_time
+                    # ВИПРАВЛЕННЯ: Флаг для предотвращения двойной торговли
+                    trade_executed = False
                     
-                    # Логика торговли на основе пересечений MA
+                    # ВИПРАВЛЕННЯ: Логика торговли на основе пересечений MA (приоритет)
                     if prev_ma7 < prev_ma25 and curr_ma7 > curr_ma25:
                         log_message("📈 Сигнал BUY: MA7 перетнула MA25 вгору", "SIGNAL")
                         if current_usdt >= MIN_NOTIONAL:
                             place_buy_order(SYMBOL, current_usdt)
+                            trade_executed = True
+                            # Обновляем баланс после торговли
+                            current_usdt, current_bnb = get_balances()
                         else:
                             log_message(f"   ⚠️ Недостатньо USDT для покупки: {current_usdt:.2f} < {MIN_NOTIONAL}", "WARNING")
                     
                     elif prev_ma7 > prev_ma25 and curr_ma7 < curr_ma25:
                         log_message("📉 Сигнал SELL: MA7 перетнула MA25 вниз", "SIGNAL")
                         current_price = prices[-1]
-                        ltc_value = current_ltc * current_price
-                        if ltc_value >= MIN_NOTIONAL:
-                            place_sell_order(SYMBOL, current_ltc)
+                        bnb_value = current_bnb * current_price
+                        if bnb_value >= MIN_NOTIONAL:
+                            place_sell_order(SYMBOL, current_bnb)
+                            trade_executed = True
+                            # Обновляем баланс после торговли
+                            current_usdt, current_bnb = get_balances()
                         else:
-                            log_message(f"   ⚠️ Недостатньо LTC для продажу: {ltc_value:.2f} USDT < {MIN_NOTIONAL}", "WARNING")
+                            log_message(f"   ⚠️ Недостатньо BNB для продажу: {bnb_value:.2f} USDT < {MIN_NOTIONAL}", "WARNING")
+                    
+                    # ВИПРАВЛЕННЯ: Автокоррекция позиции только если не было торговли по сигналу
+                    if not trade_executed:
+                        current_time = time.time()
+                        if current_time - last_autocorrect_time > 300:  # 5 минут
+                            current_price = prices[-1]
+                            bnb_current_value = current_bnb * current_price
+                            
+                            # Определяем нужную позицию по стратегии
+                            should_hold_bnb = curr_ma7 > curr_ma25
+                            currently_holding_bnb = bnb_current_value >= MIN_ASSET_VALUE
+                            
+                            # Если позиция не соответствует стратегии - корректируем
+                            if should_hold_bnb and not currently_holding_bnb and current_usdt >= MIN_NOTIONAL:
+                                log_message("🔄 АВТОКОРРЕКЦИЯ: MA7>MA25, но держим USDT - покупаем BNB", "AUTOCORRECT")
+                                place_buy_order(SYMBOL, current_usdt)
+                                log_message("💰 Позиция скорректирована: переход на BNB", "AUTOCORRECT")
+                                last_autocorrect_time = current_time
+                            elif not should_hold_bnb and currently_holding_bnb and bnb_current_value >= MIN_NOTIONAL:
+                                log_message("🔄 АВТОКОРРЕКЦИЯ: MA7<MA25, но держим BNB - продаем BNB", "AUTOCORRECT")
+                                place_sell_order(SYMBOL, current_bnb)
+                                log_message("💰 Позиция скорректирована: переход на USDT", "AUTOCORRECT")
+                                last_autocorrect_time = current_time
 
                 prev_ma7, prev_ma25 = curr_ma7, curr_ma25
                 iteration_count += 1
@@ -268,7 +277,7 @@ def trading_bot():
 @app.route('/')
 def home():
     return jsonify({
-        "service": "LTC Trading Bot",
+        "service": "BNB Trading Bot",
         "status": bot_status["status"],
         "last_update": bot_status.get("last_update"),
         "balance": bot_status.get("balance"),

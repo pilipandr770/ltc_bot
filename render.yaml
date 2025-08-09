@@ -1,7 +1,7 @@
 services:
   - type: web
-    name: ltc-trading-bot
-    env: python
+    name: bnb-trading-bot
+    runtime: python
     plan: free
     buildCommand: pip install --no-cache-dir -r requirements.txt
     startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 1 --timeout 30 server:app

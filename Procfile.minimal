@@ -1,1 +1,0 @@
-worker: python app/bot_minimal.py

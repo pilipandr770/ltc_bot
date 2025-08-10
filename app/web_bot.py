@@ -13,17 +13,408 @@ from binance.client import Client
 from binance.enums import *
 from binance.exceptions import BinanceAPIException, BinanceOrderException
 
+# ========== Утилиты логов ==========
+def log(msg: str, level: str = "INFO"):
+    ts = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{ts}] [{level}] {msg}", flush=True)
+
+# ========== Управление конфигурацией ==========
+from dataclasses import dataclass
+from typing import List
+
+@dataclass
+class ConfigurationStatus:
+    test_mode: bool
+    api_keys_present: bool
+    api_keys_valid: bool
+    environment_source: str  # "system", "file", "default"
+    configuration_issues: List[str]
+    safety_checks_passed: bool
+
+@dataclass
+class TradingModeStatus:
+    current_mode: str  # "TEST" or "LIVE"
+    mode_source: str   # откуда взято значение
+    can_switch_to_live: bool
+    blocking_issues: List[str]
+    last_mode_change: Optional[datetime]
+
+class EnvironmentConfig:
+    """Централизованное управление переменными окружения"""
+    
+    def __init__(self):
+        self.config_status = None
+        self.load_environment()
+        self.validate_configuration()
+    
+    def load_environment(self):
+        """Загрузка переменных окружения с правильным приоритетом"""
+        log("🚀 НАЧАЛО ЗАГРУЗКИ КОНФИГУРАЦИИ", "CONFIG")
+        log("=" * 60, "CONFIG")
+        
+        # Загружаем переменные из .env файла
+        # Определяем путь к .env файлу относительно текущего файла
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        env_file_path = os.path.join(current_dir, '.env')
+        
+        log(f"🔍 Поиск .env файла: {env_file_path}", "CONFIG")
+        if os.path.exists(env_file_path):
+            log("✅ .env файл найден, загружаем...", "CONFIG")
+            load_dotenv(env_file_path)
+        else:
+            log("⚠️ .env файл не найден, используем системные переменные", "CONFIG")
+            load_dotenv()  # Попытка загрузить из текущей директории
+        
+        # Загружаем все переменные с логированием
+        self.api_key = self._get_env_with_logging("BINANCE_API_KEY", "").strip() or None
+        self.api_secret = self._get_env_with_logging("BINANCE_API_SECRET", "").strip() or None
+        self.symbol = self._get_env_with_logging("SYMBOL", "BNBUSDT", str.upper)
+        self.interval = self._get_env_with_logging("INTERVAL", "5m")
+        self.ma_short = self._get_env_with_logging("MA_SHORT", "7", int)
+        self.ma_long = self._get_env_with_logging("MA_LONG", "25", int)
+        
+        # Критически важная переменная TEST_MODE
+        # ВАЖНО: По умолчанию используем тестовый режим для безопасности
+        # В продакшн среде ОБЯЗАТЕЛЬНО должна быть установлена переменная TEST_MODE=false
+        test_mode_str = self._get_env_with_logging("TEST_MODE", "true")
+        self.test_mode = test_mode_str.lower() == "true"
+        
+        # Дополнительная диагностика для TEST_MODE
+        log("🔍 ДИАГНОСТИКА TEST_MODE:", "CONFIG")
+        log(f"   Сырое значение: '{test_mode_str}'", "CONFIG")
+        log(f"   После обработки: {self.test_mode}", "CONFIG")
+        log(f"   Ожидаемое для реального режима: TEST_MODE=false", "CONFIG")
+        
+        # Остальные параметры
+        self.check_interval = self._get_env_with_logging("CHECK_INTERVAL", "20", int)
+        self.state_path = self._get_env_with_logging("STATE_PATH", "state.json")
+        self.ma_spread_bps = self._get_env_with_logging("MA_SPREAD_BPS", "2.0", float)
+        self.max_retries = self._get_env_with_logging("MAX_RETRIES", "3", int)
+        self.health_check_interval = self._get_env_with_logging("HEALTH_CHECK_INTERVAL", "300", int)
+        self.min_balance_usdt = self._get_env_with_logging("MIN_BALANCE_USDT", "10.0", float)
+        
+        log("✅ КОНФИГУРАЦИЯ ЗАГРУЖЕНА УСПЕШНО", "CONFIG")
+        log("=" * 60, "CONFIG")
+    
+    def _get_env_with_logging(self, name: str, default: str, convert_func=None):
+        """Получение переменной окружения с подробным логированием"""
+        # Проверяем системные переменные окружения
+        system_value = os.environ.get(name)
+        
+        # Получаем значение из os.getenv (уже загружено через load_dotenv)
+        dotenv_value = os.getenv(name)
+        
+        # Определяем источник и финальное значение
+        if system_value is not None:
+            final_value = system_value
+            source = "системные переменные окружения"
+        elif dotenv_value is not None:
+            final_value = dotenv_value
+            source = ".env файл"
+        else:
+            final_value = default
+            source = "значение по умолчанию"
+        
+        # Применяем конвертацию если нужно
+        if convert_func:
+            try:
+                converted_value = convert_func(final_value)
+                self._log_env_var(name, converted_value, convert_func(default) if default else None, source)
+                return converted_value
+            except (ValueError, TypeError) as e:
+                log(f"❌ Ошибка конвертации {name}={final_value}: {e}. Используется значение по умолчанию.", "ERROR")
+                converted_default = convert_func(default) if default else None
+                self._log_env_var(name, converted_default, converted_default, "значение по умолчанию (ошибка конвертации)")
+                return converted_default
+        else:
+            self._log_env_var(name, final_value, default, source)
+            return final_value
+    
+    def _log_env_var(self, name: str, value: Any, default: Any, source: str = "unknown") -> None:
+        """Логирование переменной окружения с источником"""
+        if value == default:
+            log(f"🔧 ENV {name}={value} (источник: значение по умолчанию)", "CONFIG")
+        else:
+            log(f"🔧 ENV {name}={value} (источник: {source})", "CONFIG")
+    
+    def validate_configuration(self):
+        """Валидация критических настроек"""
+        issues = []
+        
+        # Проверяем API ключи
+        api_keys_present = bool(self.api_key and self.api_secret)
+        if not api_keys_present:
+            issues.append("API ключи не настроены")
+        
+        # Логируем критически важную информацию о режиме торговли
+        log("=" * 60, "CONFIG")
+        if self.test_mode:
+            log("🧪 РЕЖИМ ТОРГОВЛИ: ТЕСТОВЫЙ (TEST_MODE=true)", "CONFIG")
+            log("⚠️  Все торговые операции будут симулированы", "CONFIG")
+        else:
+            log("🔴 РЕЖИМ ТОРГОВЛИ: РЕАЛЬНЫЙ (TEST_MODE=false)", "CONFIG")
+            log("⚠️  ВНИМАНИЕ: Будут выполняться РЕАЛЬНЫЕ торговые операции!", "CONFIG")
+            log("💰 Убедитесь что API ключи настроены корректно", "CONFIG")
+            if not api_keys_present:
+                log("❌ КРИТИЧЕСКАЯ ОШИБКА: API ключи не настроены для реального режима!", "ERROR")
+                issues.append("Реальный режим требует API ключи")
+        log("=" * 60, "CONFIG")
+        
+        # Создаем статус конфигурации
+        self.config_status = ConfigurationStatus(
+            test_mode=self.test_mode,
+            api_keys_present=api_keys_present,
+            api_keys_valid=False,  # Будет проверено позже
+            environment_source="mixed",  # Смешанный источник
+            configuration_issues=issues,
+            safety_checks_passed=len(issues) == 0
+        )
+    
+    def get_trading_mode(self) -> bool:
+        """Определение режима торговли с диагностикой"""
+        return self.test_mode
+    
+    def log_configuration_status(self):
+        """Подробное логирование текущей конфигурации"""
+        if self.config_status:
+            log("📊 СТАТУС КОНФИГУРАЦИИ:", "CONFIG")
+            log(f"   Режим торговли: {'ТЕСТОВЫЙ' if self.config_status.test_mode else 'РЕАЛЬНЫЙ'}", "CONFIG")
+            log(f"   API ключи присутствуют: {'✅' if self.config_status.api_keys_present else '❌'}", "CONFIG")
+            log(f"   Проверки безопасности: {'✅' if self.config_status.safety_checks_passed else '❌'}", "CONFIG")
+            if self.config_status.configuration_issues:
+                log(f"   Проблемы: {', '.join(self.config_status.configuration_issues)}", "CONFIG")
+
+class TradingModeController:
+    """Контроллер режима торговли с проверками безопасности"""
+    
+    def __init__(self, config: EnvironmentConfig):
+        self.config = config
+        self.test_mode = config.get_trading_mode()
+        self.trading_mode_status = None
+        self._update_trading_mode_status()
+    
+    def _update_trading_mode_status(self):
+        """Обновление статуса режима торговли"""
+        blocking_issues = []
+        can_switch_to_live = True
+        
+        # Проверяем API ключи для реального режима
+        if not self.test_mode and not self.config.config_status.api_keys_present:
+            blocking_issues.append("API ключи не настроены")
+            can_switch_to_live = False
+        
+        # Проверяем общие проблемы конфигурации
+        if self.config.config_status.configuration_issues:
+            blocking_issues.extend(self.config.config_status.configuration_issues)
+            can_switch_to_live = False
+        
+        self.trading_mode_status = TradingModeStatus(
+            current_mode="TEST" if self.test_mode else "LIVE",
+            mode_source="конфигурация окружения",
+            can_switch_to_live=can_switch_to_live,
+            blocking_issues=blocking_issues,
+            last_mode_change=datetime.now(timezone.utc)
+        )
+    
+    def is_test_mode(self) -> bool:
+        """Проверка текущего режима торговли"""
+        return self.test_mode
+    
+    def is_live_mode(self) -> bool:
+        """Проверка реального режима торговли"""
+        return not self.test_mode
+    
+    def validate_live_mode_requirements(self) -> bool:
+        """Проверка требований для реального режима"""
+        if self.test_mode:
+            return True  # В тестовом режиме все требования выполнены
+        
+        # Проверяем API ключи
+        if not self.config.config_status.api_keys_present:
+            log("❌ ПРОВЕРКА РЕАЛЬНОГО РЕЖИМА: API ключи не настроены", "ERROR")
+            return False
+        
+        # Проверяем общие проблемы конфигурации
+        if self.config.config_status.configuration_issues:
+            log(f"❌ ПРОВЕРКА РЕАЛЬНОГО РЕЖИМА: {', '.join(self.config.config_status.configuration_issues)}", "ERROR")
+            return False
+        
+        log("✅ ПРОВЕРКА РЕАЛЬНОГО РЕЖИМА: Все требования выполнены", "SUCCESS")
+        return True
+    
+    def get_mode_display_name(self) -> str:
+        """Получить отображаемое имя режима"""
+        return "ТЕСТОВЫЙ" if self.test_mode else "РЕАЛЬНЫЙ"
+    
+    def get_mode_emoji(self) -> str:
+        """Получить эмодзи для режима"""
+        return "🧪" if self.test_mode else "🔴"
+    
+    def log_trading_mode_status(self):
+        """Логирование статуса режима торговли"""
+        if self.trading_mode_status:
+            log("📊 СТАТУС РЕЖИМА ТОРГОВЛИ:", "CONFIG")
+            log(f"   Текущий режим: {self.get_mode_emoji()} {self.trading_mode_status.current_mode}", "CONFIG")
+            log(f"   Источник: {self.trading_mode_status.mode_source}", "CONFIG")
+            log(f"   Можно переключить в реальный: {'✅' if self.trading_mode_status.can_switch_to_live else '❌'}", "CONFIG")
+            if self.trading_mode_status.blocking_issues:
+                log(f"   Блокирующие проблемы: {', '.join(self.trading_mode_status.blocking_issues)}", "CONFIG")
+    
+    def get_trade_operation_prefix(self) -> str:
+        """Получить префикс для торговых операций"""
+        return "🧪 TEST" if self.test_mode else "🔴 LIVE"
+
+class SafetyValidator:
+    """Валидатор безопасности для проверок перед торговлей"""
+    
+    def __init__(self, config: EnvironmentConfig):
+        self.config = config
+    
+    def validate_api_keys(self, api_key: str, api_secret: str) -> bool:
+        """Проверка валидности API ключей"""
+        if not api_key or not api_secret:
+            log("❌ ПРОВЕРКА API КЛЮЧЕЙ: Ключи не предоставлены", "SAFETY")
+            return False
+        
+        # Проверка формата ключей
+        if len(api_key) < 20 or len(api_secret) < 20:
+            log("❌ ПРОВЕРКА API КЛЮЧЕЙ: Ключи слишком короткие", "SAFETY")
+            return False
+        
+        # Проверка на наличие недопустимых символов
+        import re
+        if not re.match(r'^[A-Za-z0-9]+$', api_key) or not re.match(r'^[A-Za-z0-9]+$', api_secret):
+            log("❌ ПРОВЕРКА API КЛЮЧЕЙ: Ключи содержат недопустимые символы", "SAFETY")
+            return False
+        
+        log("✅ ПРОВЕРКА API КЛЮЧЕЙ: Формат ключей корректный", "SAFETY")
+        return True
+    
+    def check_account_permissions(self, client) -> bool:
+        """Проверка разрешений аккаунта для торговли"""
+        if not client:
+            log("❌ ПРОВЕРКА РАЗРЕШЕНИЙ: Клиент не инициализирован", "SAFETY")
+            return False
+        
+        try:
+            # Проверяем статус аккаунта
+            account_info = client.get_account()
+            
+            # Проверяем разрешения на торговлю
+            can_trade = account_info.get('canTrade', False)
+            if not can_trade:
+                log("❌ ПРОВЕРКА РАЗРЕШЕНИЙ: Торговля запрещена для аккаунта", "SAFETY")
+                return False
+            
+            # Проверяем статус аккаунта
+            account_type = account_info.get('accountType', 'UNKNOWN')
+            log(f"✅ ПРОВЕРКА РАЗРЕШЕНИЙ: Тип аккаунта: {account_type}, торговля разрешена", "SAFETY")
+            return True
+            
+        except Exception as e:
+            log(f"❌ ПРОВЕРКА РАЗРЕШЕНИЙ: Ошибка при проверке аккаунта: {e}", "SAFETY")
+            return False
+    
+    def validate_minimum_balance(self, usdt_balance: float, base_balance: float, current_price: float) -> bool:
+        """Проверка минимального баланса"""
+        total_value = usdt_balance + (base_balance * current_price)
+        min_required = self.config.min_balance_usdt
+        
+        if total_value < min_required:
+            log(f"❌ ПРОВЕРКА БАЛАНСА: Недостаточный баланс ${total_value:.2f} < ${min_required:.2f}", "SAFETY")
+            return False
+        
+        log(f"✅ ПРОВЕРКА БАЛАНСА: Баланс достаточный ${total_value:.2f} >= ${min_required:.2f}", "SAFETY")
+        return True
+    
+    def validate_trade_amount(self, amount: float, min_amount: float = 10.0) -> bool:
+        """Проверка минимальной суммы для торговли"""
+        if amount < min_amount:
+            log(f"❌ ПРОВЕРКА СУММЫ ТОРГОВЛИ: Сумма слишком мала ${amount:.2f} < ${min_amount:.2f}", "SAFETY")
+            return False
+        
+        log(f"✅ ПРОВЕРКА СУММЫ ТОРГОВЛИ: Сумма достаточная ${amount:.2f} >= ${min_amount:.2f}", "SAFETY")
+        return True
+    
+    def check_api_connection(self, client) -> bool:
+        """Проверка подключения к API"""
+        if not client:
+            log("❌ ПРОВЕРКА ПОДКЛЮЧЕНИЯ: Клиент не инициализирован", "SAFETY")
+            return False
+        
+        try:
+            # Проверяем подключение
+            client.ping()
+            
+            # Проверяем время сервера
+            server_time = client.get_server_time()
+            local_time = int(time.time() * 1000)
+            time_diff = abs(server_time["serverTime"] - local_time)
+            
+            if time_diff > 5000:  # 5 секунд
+                log(f"⚠️ ПРОВЕРКА ПОДКЛЮЧЕНИЯ: Большая разница во времени: {time_diff}мс", "SAFETY")
+            
+            log("✅ ПРОВЕРКА ПОДКЛЮЧЕНИЯ: API доступно", "SAFETY")
+            return True
+            
+        except Exception as e:
+            log(f"❌ ПРОВЕРКА ПОДКЛЮЧЕНИЯ: Ошибка подключения к API: {e}", "SAFETY")
+            return False
+    
+    def perform_safety_checks(self, client=None, usdt_balance: float = 0, base_balance: float = 0, current_price: float = 0) -> List[str]:
+        """Выполнение всех проверок безопасности"""
+        log("🔒 НАЧАЛО ПРОВЕРОК БЕЗОПАСНОСТИ", "SAFETY")
+        log("=" * 50, "SAFETY")
+        
+        issues = []
+        
+        # 1. Проверка API ключей
+        if not self.validate_api_keys(self.config.api_key or "", self.config.api_secret or ""):
+            issues.append("Невалидные API ключи")
+        
+        # 2. Проверка подключения к API (если клиент предоставлен)
+        if client and not self.check_api_connection(client):
+            issues.append("Нет подключения к API")
+        
+        # 3. Проверка разрешений аккаунта (если клиент предоставлен)
+        if client and not self.check_account_permissions(client):
+            issues.append("Недостаточные разрешения аккаунта")
+        
+        # 4. Проверка минимального баланса (если данные предоставлены)
+        if current_price > 0 and not self.validate_minimum_balance(usdt_balance, base_balance, current_price):
+            issues.append("Недостаточный баланс для торговли")
+        
+        # Итоговый результат
+        if issues:
+            log("❌ ПРОВЕРКИ БЕЗОПАСНОСТИ ПРОВАЛЕНЫ:", "SAFETY")
+            for issue in issues:
+                log(f"   - {issue}", "SAFETY")
+        else:
+            log("✅ ВСЕ ПРОВЕРКИ БЕЗОПАСНОСТИ ПРОЙДЕНЫ", "SAFETY")
+        
+        log("=" * 50, "SAFETY")
+        return issues
+    
+    def can_perform_live_trading(self, client=None, usdt_balance: float = 0, base_balance: float = 0, current_price: float = 0) -> bool:
+        """Проверка возможности выполнения реальной торговли"""
+        if self.config.test_mode:
+            return True  # В тестовом режиме всегда можно торговать
+        
+        issues = self.perform_safety_checks(client, usdt_balance, base_balance, current_price)
+        return len(issues) == 0
+
 # ========== Простая логика переключения активов ==========
 class AssetSwitcher:
     """Простой класс для переключения между активами по MA сигналам"""
     
-    def __init__(self, client: Optional[Client], symbol: str):
+    def __init__(self, client: Optional[Client], symbol: str, trading_mode_controller: Optional['TradingModeController'] = None):
         self.client = client
         self.symbol = symbol
         self.base_asset = symbol[:-4] if symbol.endswith("USDT") else symbol.split("USDT")[0]
         self.quote_asset = "USDT"
         self.last_switch_time = 0
         self.min_switch_interval = 10  # минимум 10 секунд между переключениями
+        self.trading_mode_controller = trading_mode_controller
     
     def should_hold_base(self, ma_short: float, ma_long: float) -> bool:
         """Определить, должны ли мы держать базовый актив (коин)"""
@@ -80,7 +471,8 @@ class AssetSwitcher:
     def _sell_base_for_usdt(self, base_qty: float, step: float) -> bool:
         """Продать весь базовый актив за USDT"""
         if TEST_MODE:
-            log(f"🧪 TEST SELL: {base_qty:.6f} {self.base_asset} -> USDT", "TEST")
+            prefix = self.trading_mode_controller.get_trade_operation_prefix() if self.trading_mode_controller else "🧪 TEST"
+            log(f"{prefix} SELL: {base_qty:.6f} {self.base_asset} -> USDT", "TEST")
             self.last_switch_time = time.time()
             return True
         
@@ -119,7 +511,8 @@ class AssetSwitcher:
         """Купить базовый актив за весь USDT"""
         if TEST_MODE:
             qty = usdt_amount / current_price
-            log(f"🧪 TEST BUY: {usdt_amount:.2f} USDT -> {qty:.6f} {self.base_asset}", "TEST")
+            prefix = self.trading_mode_controller.get_trade_operation_prefix() if self.trading_mode_controller else "🧪 TEST"
+            log(f"{prefix} BUY: {usdt_amount:.2f} USDT -> {qty:.6f} {self.base_asset}", "TEST")
             self.last_switch_time = time.time()
             return True
         
@@ -155,33 +548,34 @@ class AssetSwitcher:
             log(f"❌ ОШИБКА ПОКУПКИ: {e}", "ERROR")
             return False
 
-# ========== Загрузка окружения ==========
-load_dotenv()
-API_KEY = os.getenv("BINANCE_API_KEY", "").strip() or None
-API_SECRET = os.getenv("BINANCE_API_SECRET", "").strip() or None
-SYMBOL = os.getenv("SYMBOL", "BNBUSDT").upper()
-INTERVAL = os.getenv("INTERVAL", "5m")  # 1m,3m,5m,15m,1h,...
-MA_SHORT = int(os.getenv("MA_SHORT", "7"))
-MA_LONG = int(os.getenv("MA_LONG", "25"))
+# ========== Инициализация конфигурации ==========
+env_config = EnvironmentConfig()
 
-# Основные параметры
-TEST_MODE = os.getenv("TEST_MODE", "true").lower() == "true"
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "20"))   # проверка каждые 20 секунд
-STATE_PATH = os.getenv("STATE_PATH", "state.json")
+# Логируем статус конфигурации
+env_config.log_configuration_status()
 
-# Фильтр шума для кроса (мин. разница между MA в % от цены)
-MA_SPREAD_BPS = float(os.getenv("MA_SPREAD_BPS", "2.0"))  # 2 б.п. = 0.02% для более чувствительной торговли
-
-# Дополнительные параметры
-MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
-HEALTH_CHECK_INTERVAL = int(os.getenv("HEALTH_CHECK_INTERVAL", "300"))
-MIN_BALANCE_USDT = float(os.getenv("MIN_BALANCE_USDT", "10.0"))
+# Экспортируем переменные для обратной совместимости
+API_KEY = env_config.api_key
+API_SECRET = env_config.api_secret
+SYMBOL = env_config.symbol
+INTERVAL = env_config.interval
+MA_SHORT = env_config.ma_short
+MA_LONG = env_config.ma_long
+TEST_MODE = env_config.test_mode
+CHECK_INTERVAL = env_config.check_interval
+STATE_PATH = env_config.state_path
+MA_SPREAD_BPS = env_config.ma_spread_bps
+MAX_RETRIES = env_config.max_retries
+HEALTH_CHECK_INTERVAL = env_config.health_check_interval
+MIN_BALANCE_USDT = env_config.min_balance_usdt
 
 app = Flask(__name__)
 
 # Глобальные переменные
 client: Optional[Client] = None
 asset_switcher: Optional[AssetSwitcher] = None
+trading_mode_controller: Optional[TradingModeController] = None
+safety_validator: Optional[SafetyValidator] = None
 running = False
 last_action_ts = 0
 last_health_check = 0
@@ -205,11 +599,6 @@ bot_status = {
     "switches_count": 0
 }
 
-# ========== Утилиты логов ==========
-def log(msg: str, level: str = "INFO"):
-    ts = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{ts}] [{level}] {msg}", flush=True)
-
 # ========== Персистентное состояние ==========
 def load_state():
     global bot_status
@@ -232,7 +621,12 @@ def save_state():
 
 # ========== Binance клиент ==========
 def init_client():
-    global client, asset_switcher
+    global client, asset_switcher, trading_mode_controller
+    
+    # Создаем контроллер режима торговли
+    trading_mode_controller = TradingModeController(env_config)
+    trading_mode_controller.log_trading_mode_status()
+    
     if API_KEY and API_SECRET:
         try:
             client = Client(API_KEY, API_SECRET)
@@ -245,7 +639,7 @@ def init_client():
                 log(f"Время синхронизировано, offset={offset}мс", "TIME")
             
             client.ping()
-            asset_switcher = AssetSwitcher(client, SYMBOL)
+            asset_switcher = AssetSwitcher(client, SYMBOL, trading_mode_controller)
             
             log("Подключение к Binance успешно", "SUCCESS")
             bot_status["status"] = "connected"
@@ -258,7 +652,7 @@ def init_client():
             return False
     else:
         log("API ключи не заданы — TEST_MODE автоматически true", "WARN")
-        asset_switcher = AssetSwitcher(None, SYMBOL)
+        asset_switcher = AssetSwitcher(None, SYMBOL, trading_mode_controller)
         bot_status["status"] = "no_api_keys"
         return False
 

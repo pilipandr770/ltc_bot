@@ -1061,6 +1061,78 @@ def config():
         "min_balance_usdt": MIN_BALANCE_USDT
     })
 
+@app.route("/config-status")
+def config_status():
+    """Подробная диагностика конфигурации и переменных окружения"""
+    
+    # Проверяем источники переменных окружения
+    env_sources = {}
+    critical_vars = ["TEST_MODE", "BINANCE_API_KEY", "BINANCE_API_SECRET", "SYMBOL"]
+    
+    for var in critical_vars:
+        system_value = os.environ.get(var)
+        dotenv_value = os.getenv(var)
+        
+        if system_value is not None:
+            source = "системные переменные окружения"
+            value = system_value
+        elif dotenv_value is not None:
+            source = ".env файл"
+            value = dotenv_value
+        else:
+            source = "значение по умолчанию"
+            value = "не установлено"
+        
+        # Маскируем API ключи для безопасности
+        if "API" in var and value != "не установлено":
+            display_value = f"{value[:8]}...{value[-4:]}" if len(value) > 12 else "установлен"
+        else:
+            display_value = value
+            
+        env_sources[var] = {
+            "value": display_value,
+            "source": source,
+            "is_set": value != "не установлено"
+        }
+    
+    # Статус конфигурации
+    config_issues = []
+    if not env_config.config_status.api_keys_present:
+        config_issues.append("API ключи не настроены")
+    if env_config.config_status.test_mode and env_sources["TEST_MODE"]["source"] == "значение по умолчанию":
+        config_issues.append("TEST_MODE использует небезопасное значение по умолчанию")
+    
+    return jsonify({
+        "ok": True,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "trading_mode": {
+            "current": "TEST" if TEST_MODE else "LIVE",
+            "test_mode_value": TEST_MODE,
+            "source": env_sources["TEST_MODE"]["source"],
+            "warning": "Используется тестовый режим" if TEST_MODE else "ВНИМАНИЕ: Реальная торговля активна!"
+        },
+        "environment_variables": env_sources,
+        "configuration_status": {
+            "api_keys_present": env_config.config_status.api_keys_present,
+            "safety_checks_passed": env_config.config_status.safety_checks_passed,
+            "issues": config_issues
+        },
+        "file_status": {
+            "env_file_path": os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'),
+            "env_file_exists": os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
+        },
+        "recommendations": [
+            "Для реального режима установите TEST_MODE=false в переменных окружения Render",
+            "Убедитесь что API ключи настроены корректно",
+            "Проверьте права API ключей в Binance (только спот-торговля)",
+            "Мониторьте логи после переключения режима"
+        ] if TEST_MODE else [
+            "Бот работает в реальном режиме - мониторьте операции",
+            "Проверяйте баланс и результаты торговли",
+            "Убедитесь что стратегия работает корректно"
+        ]
+    })
+
 # ========== Автозапуск для деплоя ==========
 if API_KEY and API_SECRET:
     try:

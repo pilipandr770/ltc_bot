@@ -12,6 +12,20 @@ services:
         sync: false
       - key: TEST_MODE
         value: "false"
+      - key: SYMBOL
+        value: "BNBUSDT"
+      - key: CHECK_INTERVAL
+        value: "20"
+      - key: INTERVAL
+        value: "5m"
+      - key: MA_SHORT
+        value: "7"
+      - key: MA_LONG
+        value: "25"
+      - key: MA_SPREAD_BPS
+        value: "2.0"
+      - key: MIN_BALANCE_USDT
+        value: "10.0"
       - key: PYTHONUNBUFFERED
         value: "1"
     healthCheckPath: "/health"

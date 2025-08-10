@@ -23,7 +23,7 @@ class AssetSwitcher:
         self.base_asset = symbol[:-4] if symbol.endswith("USDT") else symbol.split("USDT")[0]
         self.quote_asset = "USDT"
         self.last_switch_time = 0
-        self.min_switch_interval = 20  # минимум 20 секунд между переключениями
+        self.min_switch_interval = 10  # минимум 10 секунд между переключениями
     
     def should_hold_base(self, ma_short: float, ma_long: float) -> bool:
         """Определить, должны ли мы держать базовый актив (коин)"""
@@ -34,21 +34,34 @@ class AssetSwitcher:
         usdt_value = usdt_balance
         base_value = base_balance * current_price
         
+        # Логируем детали для диагностики
+        log(f"🔍 ОПРЕДЕЛЕНИЕ АКТИВА: USDT=${usdt_value:.2f}, {self.base_asset}=${base_value:.2f}", "DEBUG")
+        
         # Считаем что держим тот актив, которого больше по стоимости
-        if base_value > usdt_value and base_value > 5.0:  # минимум $5
+        # Используем более низкий порог для определения
+        if base_value > usdt_value and base_value > 1.0:  # минимум $1
+            log(f"🔍 РЕЗУЛЬТАТ: Держим {self.base_asset} (${base_value:.2f} > ${usdt_value:.2f})", "DEBUG")
             return self.base_asset
         else:
+            log(f"🔍 РЕЗУЛЬТАТ: Держим {self.quote_asset} (${usdt_value:.2f} >= ${base_value:.2f})", "DEBUG")
             return self.quote_asset
     
     def need_to_switch(self, current_asset: str, should_hold: str) -> bool:
         """Нужно ли переключать актив"""
         current_time = time.time()
+        time_since_last = current_time - self.last_switch_time
+        
+        log(f"🔍 ПРОВЕРКА ПЕРЕКЛЮЧЕНИЯ: current='{current_asset}', should='{should_hold}', time_since_last={time_since_last:.1f}s", "DEBUG")
         
         # Проверяем кулдаун
-        if current_time - self.last_switch_time < self.min_switch_interval:
+        if time_since_last < self.min_switch_interval:
+            log(f"🔍 КУЛДАУН АКТИВЕН: {time_since_last:.1f}s < {self.min_switch_interval}s", "DEBUG")
             return False
         
-        return current_asset != should_hold
+        assets_different = current_asset != should_hold
+        log(f"🔍 АКТИВЫ РАЗНЫЕ: {assets_different}", "DEBUG")
+        
+        return assets_different
     
     def execute_switch(self, from_asset: str, to_asset: str, balance: float, current_price: float, step: float) -> bool:
         """Выполнить переключение актива"""
@@ -157,7 +170,7 @@ CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "20"))   # проверка к�
 STATE_PATH = os.getenv("STATE_PATH", "state.json")
 
 # Фильтр шума для кроса (мин. разница между MA в % от цены)
-MA_SPREAD_BPS = float(os.getenv("MA_SPREAD_BPS", "5.0"))  # 5 б.п. = 0.05%
+MA_SPREAD_BPS = float(os.getenv("MA_SPREAD_BPS", "2.0"))  # 2 б.п. = 0.02% для более чувствительной торговли
 
 # Дополнительные параметры
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
@@ -486,8 +499,16 @@ def trading_loop():
                 status_emoji = "✅ СИНХРОНИЗИРОВАНО" if current_asset == should_hold_asset else "⚠️ ТРЕБУЕТСЯ ПЕРЕКЛЮЧЕНИЕ"
                 log(f"📊 СТАТУС: Цена={price:.4f} | Держим={current_asset} | Нужно={should_hold_asset} | {status_emoji}", "STATUS")
                 
+                # Подробная диагностика переключения
+                log(f"🔍 ДИАГНОСТИКА: current_asset='{current_asset}', should_hold_asset='{should_hold_asset}'", "DEBUG")
+                log(f"🔍 БАЛАНСЫ: USDT={usdt_bal:.2f}, {asset_switcher.base_asset}={base_bal:.6f} (${base_value:.2f})", "DEBUG")
+                log(f"🔍 КУЛДАУН: Прошло {time_since_last_switch:.1f}сек с последнего переключения (мин: {asset_switcher.min_switch_interval}сек)", "DEBUG")
+                
                 # Проверяем нужно ли переключать актив
-                if asset_switcher.need_to_switch(current_asset, should_hold_asset):
+                need_switch = asset_switcher.need_to_switch(current_asset, should_hold_asset)
+                log(f"🔍 РЕШЕНИЕ: need_to_switch = {need_switch}", "DEBUG")
+                
+                if need_switch:
                     log(f"🔄 ПЕРЕКЛЮЧЕНИЕ ТРЕБУЕТСЯ: {current_asset} → {should_hold_asset}", "SWITCH")
                     
                     # Подробная информация о переключении
@@ -516,11 +537,20 @@ def trading_loop():
                         last_action_ts = time.time()
                         log(f"✅ ПЕРЕКЛЮЧЕНИЕ ВЫПОЛНЕНО УСПЕШНО! Общее количество переключений: {bot_status['switches_count']}", "SUCCESS")
                         
+                        # Ждем немного для обновления балансов на бирже
+                        time.sleep(2)
+                        
                         # Логируем новые балансы после переключения
                         new_usdt_bal, new_base_bal = get_balances()
                         new_base_value = new_base_bal * price
                         new_total = new_usdt_bal + new_base_value
                         log(f"💰 НОВЫЕ БАЛАНСЫ: USDT={new_usdt_bal:.2f} | {asset_switcher.base_asset}={new_base_bal:.6f} (${new_base_value:.2f}) | ВСЕГО=${new_total:.2f}", "RESULT")
+                        
+                        # Обновляем статус с новыми балансами
+                        bot_status.update({
+                            "balance_usdt": new_usdt_bal,
+                            "balance_base": new_base_bal
+                        })
                     else:
                         log(f"❌ ОШИБКА ПЕРЕКЛЮЧЕНИЯ!", "ERROR")
                         error_count += 1
@@ -668,3 +698,4 @@ if __name__ == "__main__":
     
     port = int(os.getenv("PORT", "5000"))
     app.run(host="0.0.0.0", port=port)
+    

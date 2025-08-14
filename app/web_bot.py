@@ -483,15 +483,24 @@ class AssetSwitcher:
         # Округляем количество согласно требованиям биржи
         qty = round_step(base_qty * 0.999, step)  # 99.9% для учета комиссий
         
-        log(f"🔢 РАСЧЕТ ПРОДАЖИ: Исходное количество={base_qty:.6f}, После округления={qty:.6f} (step={step})", "CALC")
+        log(f"🔢 РАСЧЕТ ПРОДАЖИ: Исходное количество={base_qty:.6f}, После округления={qty} (step={step})", "CALC")
         
         if qty <= 0:
-            log(f"❌ Количество для продажи слишком мало: {qty:.6f}", "WARN")
+            log(f"❌ Количество для продажи слишком мало: {qty}", "WARN")
             return False
         
         try:
-            log(f"📤 ОТПРАВКА ОРДЕРА НА ПРОДАЖУ: {qty:.6f} {self.base_asset}", "ORDER")
-            order = self.client.order_market_sell(symbol=self.symbol, quantity=qty)
+            # Преобразуем количество в строку с подходящей точностью
+            precision = 0
+            step_str = str(step)
+            if '.' in step_str:
+                precision = len(step_str.split('.')[-1])
+            
+            # Используем строковое представление для точного соответствия требованиям Binance
+            qty_str = '{:.{}f}'.format(qty, precision)
+            log(f"📤 ОТПРАВКА ОРДЕРА НА ПРОДАЖУ: {qty_str} {self.base_asset} (форматировано с точностью {precision})", "ORDER")
+            
+            order = self.client.order_market_sell(symbol=self.symbol, quantity=qty_str)
             
             # Подробная информация об ордере
             if 'fills' in order and order['fills']:
@@ -499,10 +508,27 @@ class AssetSwitcher:
                 avg_price = total_usdt / float(order['executedQty']) if float(order['executedQty']) > 0 else 0
                 log(f"✅ ПРОДАЖА ВЫПОЛНЕНА: {order['executedQty']} {self.base_asset} за {total_usdt:.2f} USDT (средняя цена: {avg_price:.4f})", "TRADE")
             else:
-                log(f"✅ ПРОДАЖА ВЫПОЛНЕНА: {qty:.6f} {self.base_asset} -> USDT", "TRADE")
+                log(f"✅ ПРОДАЖА ВЫПОЛНЕНА: {qty_str} {self.base_asset} -> USDT", "TRADE")
             
             self.last_switch_time = time.time()
             return True
+        except BinanceAPIException as e:
+            log(f"❌ ОШИБКА ПРОДАЖИ: {e}", "ERROR")
+            # Пробуем с меньшей точностью при ошибке о большой точности
+            if "слишком большую точность" in str(e) and precision > 0:
+                try:
+                    # Пробуем с меньшей точностью
+                    new_precision = max(0, precision - 1)
+                    qty_str = '{:.{}f}'.format(qty, new_precision)
+                    log(f"🔄 ПОВТОРНАЯ ПОПЫТКА с меньшей точностью {new_precision}: {qty_str}", "RETRY")
+                    
+                    order = self.client.order_market_sell(symbol=self.symbol, quantity=qty_str)
+                    log(f"✅ ПРОДАЖА ВЫПОЛНЕНА со второй попытки: {qty_str} {self.base_asset} -> USDT", "TRADE")
+                    self.last_switch_time = time.time()
+                    return True
+                except Exception as retry_e:
+                    log(f"❌ ОШИБКА при повторной попытке: {retry_e}", "ERROR")
+            return False
         except Exception as e:
             log(f"❌ ОШИБКА ПРОДАЖИ: {e}", "ERROR")
             return False
@@ -524,15 +550,24 @@ class AssetSwitcher:
         usdt_to_spend = usdt_amount * 0.999  # 99.9% для учета комиссий
         qty = round_step(usdt_to_spend / current_price, step)
         
-        log(f"🔢 РАСЧЕТ ПОКУПКИ: USDT={usdt_amount:.2f}, К трате={usdt_to_spend:.2f}, Цена={current_price:.4f}, Количество={qty:.6f} (step={step})", "CALC")
+        # Определяем точность
+        precision = 0
+        step_str = str(step)
+        if '.' in step_str:
+            precision = len(step_str.split('.')[-1])
+            
+        log(f"🔢 РАСЧЕТ ПОКУПКИ: USDT={usdt_amount:.2f}, К трате={usdt_to_spend:.2f}, Цена={current_price:.4f}, Количество={qty} (step={step}, precision={precision})", "CALC")
         
         if qty <= 0 or usdt_to_spend < 10:  # минимум $10
             log(f"❌ Сумма для покупки слишком мала: {usdt_to_spend:.2f} USDT (минимум $10)", "WARN")
             return False
         
         try:
-            log(f"📤 ОТПРАВКА ОРДЕРА НА ПОКУПКУ: {qty:.6f} {self.base_asset} за {usdt_to_spend:.2f} USDT", "ORDER")
-            order = self.client.order_market_buy(symbol=self.symbol, quantity=qty)
+            # Используем строковое представление для точного соответствия требованиям Binance
+            qty_str = '{:.{}f}'.format(qty, precision)
+            
+            log(f"📤 ОТПРАВКА ОРДЕРА НА ПОКУПКУ: {qty_str} {self.base_asset} за {usdt_to_spend:.2f} USDT", "ORDER")
+            order = self.client.order_market_buy(symbol=self.symbol, quantity=qty_str)
             
             # Подробная информация об ордере
             if 'fills' in order and order['fills']:
@@ -540,10 +575,27 @@ class AssetSwitcher:
                 avg_price = total_cost / float(order['executedQty']) if float(order['executedQty']) > 0 else 0
                 log(f"✅ ПОКУПКА ВЫПОЛНЕНА: {order['executedQty']} {self.base_asset} за {total_cost:.2f} USDT (средняя цена: {avg_price:.4f})", "TRADE")
             else:
-                log(f"✅ ПОКУПКА ВЫПОЛНЕНА: {usdt_to_spend:.2f} USDT -> {qty:.6f} {self.base_asset}", "TRADE")
+                log(f"✅ ПОКУПКА ВЫПОЛНЕНА: {usdt_to_spend:.2f} USDT -> {qty_str} {self.base_asset}", "TRADE")
             
             self.last_switch_time = time.time()
             return True
+        except BinanceAPIException as e:
+            log(f"❌ ОШИБКА ПОКУПКИ: {e}", "ERROR")
+            # Пробуем с меньшей точностью при ошибке о большой точности
+            if "слишком большую точность" in str(e) and precision > 0:
+                try:
+                    # Пробуем с меньшей точностью
+                    new_precision = max(0, precision - 1)
+                    qty_str = '{:.{}f}'.format(qty, new_precision)
+                    log(f"🔄 ПОВТОРНАЯ ПОПЫТКА с меньшей точностью {new_precision}: {qty_str}", "RETRY")
+                    
+                    order = self.client.order_market_buy(symbol=self.symbol, quantity=qty_str)
+                    log(f"✅ ПОКУПКА ВЫПОЛНЕНА со второй попытки: {qty_str} {self.base_asset}", "TRADE")
+                    self.last_switch_time = time.time()
+                    return True
+                except Exception as retry_e:
+                    log(f"❌ ОШИБКА при повторной попытке: {retry_e}", "ERROR")
+            return False
         except Exception as e:
             log(f"❌ ОШИБКА ПОКУПКИ: {e}", "ERROR")
             return False
@@ -675,13 +727,28 @@ def get_symbol_filters(symbol: str):
         min_qty = float(lot["minQty"])
         min_not = float(min_notional["minNotional"]) if min_notional else 10.0
         
+        # Подробное логирование фильтров
+        log(f"ФИЛЬТРЫ СИМВОЛА {symbol}:", "INFO")
+        log(f"  - Step Size (LOT_SIZE): {step}", "INFO")
+        log(f"  - Tick Size (PRICE_FILTER): {tick}", "INFO")
+        log(f"  - Min Quantity: {min_qty}", "INFO")
+        log(f"  - Min Notional: {min_not}", "INFO")
+        
         return step, tick, min_qty, min_not
     except Exception as e:
         log(f"Ошибка получения фильтров символа: {e}", "ERROR")
         return 0.001, 0.01, 0.001, 10.0
 
 def round_step(qty: float, step: float) -> float:
-    return math.floor(qty / step) * step
+    # Определение точности на основе шага
+    precision = 0
+    step_str = str(step)
+    if '.' in step_str:
+        precision = len(step_str.split('.')[-1])
+    
+    rounded = math.floor(qty / step) * step
+    # Форматируем с нужной точностью
+    return float('{:.{}f}'.format(rounded, precision))
 
 def round_tick(price: float, tick: float) -> float:
     return round(math.floor(price / tick) * tick, 8)
@@ -947,8 +1014,14 @@ def trading_loop():
                             "balance_base": new_base_bal
                         })
                     else:
-                        log(f"❌ ОШИБКА ПЕРЕКЛЮЧЕНИЯ!", "ERROR")
+                        log(f"❌ ОШИБКА ПЕРЕКЛЮЧЕНИЯ! Будет повторная попытка в следующем цикле.", "ERROR")
                         error_count += 1
+                        # Добавляем информацию в bot_status для диагностики
+                        bot_status["last_error"] = {
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "action": f"switch_{current_asset}_to_{should_hold_asset}",
+                            "error_count": error_count
+                        }
                 else:
                     log(f"✅ ПЕРЕКЛЮЧЕНИЕ НЕ ТРЕБУЕТСЯ - активы синхронизированы", "OK")
             

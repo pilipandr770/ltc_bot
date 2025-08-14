@@ -30,8 +30,8 @@ BINANCE_API_SECRET = ваш_api_секрет
 **Дополнительные настройки (опционально):**
 ```
 SYMBOL = BNBUSDT
-CHECK_INTERVAL = 20
-INTERVAL = 5m
+CHECK_INTERVAL = 60
+INTERVAL = 30m
 MA_SHORT = 7
 MA_LONG = 25
 MA_SPREAD_BPS = 2.0

@@ -54,10 +54,10 @@ python app/bot.py
 
 ```python
 SYMBOL = 'BNBUSDT'              # Торговая пара
-INTERVAL = 5MINUTE              # Таймфрейм
+INTERVAL = 30MINUTE             # Таймфрейм
 MA_SHORT = 7                    # Короткая MA
 MA_LONG = 25                    # Длинная MA
-CHECK_INTERVAL = 20             # Интервал проверки (сек)
+CHECK_INTERVAL = 60             # Интервал проверки (сек)
 TRADE_PERCENTAGE = 0.95         # Процент от баланса для торговли
 TEST_MODE = False               # Тестовый режим
 ```

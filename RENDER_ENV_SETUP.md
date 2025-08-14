@@ -27,7 +27,7 @@ BINANCE_API_SECRET = ваш_api_секрет
 #### Дополнительные настройки (опционально):
 ```
 SYMBOL = BNBUSDT
-CHECK_INTERVAL = 20
+CHECK_INTERVAL = 60
 PYTHONUNBUFFERED = 1
 ```
 

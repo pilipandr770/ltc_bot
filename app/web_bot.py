@@ -69,7 +69,7 @@ class EnvironmentConfig:
         self.api_key = self._get_env_with_logging("BINANCE_API_KEY", "").strip() or None
         self.api_secret = self._get_env_with_logging("BINANCE_API_SECRET", "").strip() or None
         self.symbol = self._get_env_with_logging("SYMBOL", "BNBUSDT", str.upper)
-        self.interval = self._get_env_with_logging("INTERVAL", "5m")
+        self.interval = self._get_env_with_logging("INTERVAL", "30m")
         self.ma_short = self._get_env_with_logging("MA_SHORT", "7", int)
         self.ma_long = self._get_env_with_logging("MA_LONG", "25", int)
         
@@ -86,7 +86,7 @@ class EnvironmentConfig:
         log(f"   Ожидаемое для реального режима: TEST_MODE=false", "CONFIG")
         
         # Остальные параметры
-        self.check_interval = self._get_env_with_logging("CHECK_INTERVAL", "20", int)
+        self.check_interval = self._get_env_with_logging("CHECK_INTERVAL", "60", int)
         self.state_path = self._get_env_with_logging("STATE_PATH", "state.json")
         self.ma_spread_bps = self._get_env_with_logging("MA_SPREAD_BPS", "2.0", float)
         self.max_retries = self._get_env_with_logging("MAX_RETRIES", "3", int)
@@ -713,6 +713,7 @@ BINANCE_INTERVALS = {
     "3m": Client.KLINE_INTERVAL_3MINUTE,
     "5m": Client.KLINE_INTERVAL_5MINUTE,
     "15m": Client.KLINE_INTERVAL_15MINUTE,
+    "30m": Client.KLINE_INTERVAL_30MINUTE,
     "1h": Client.KLINE_INTERVAL_1HOUR,
     "4h": Client.KLINE_INTERVAL_4HOUR,
 }

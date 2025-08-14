@@ -88,7 +88,7 @@ class EnvironmentConfig:
         # Остальные параметры
         self.check_interval = self._get_env_with_logging("CHECK_INTERVAL", "60", int)
         self.state_path = self._get_env_with_logging("STATE_PATH", "state.json")
-        self.ma_spread_bps = self._get_env_with_logging("MA_SPREAD_BPS", "2.0", float)
+        self.ma_spread_bps = self._get_env_with_logging("MA_SPREAD_BPS", "0.5", float)
         self.max_retries = self._get_env_with_logging("MAX_RETRIES", "3", int)
         self.health_check_interval = self._get_env_with_logging("HEALTH_CHECK_INTERVAL", "300", int)
         self.min_balance_usdt = self._get_env_with_logging("MIN_BALANCE_USDT", "10.0", float)
